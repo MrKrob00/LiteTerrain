@@ -16,10 +16,10 @@ A lightweight Godot 4 editor plugin for sculpting and generating heightmap-based
 
 ## Usage
 
-1. Click **➕ Add LiteTerrain Node** in the LiteTerrain dock (left), or add a **LiteTerrain** node from the Create Node dialog — the `CollisionShape3D` (`HeightMapShape3D`) and `MeshInstance3D` (terrain material) children are created automatically.
+1. Click **➕ Add LiteTerrain Node** in the LiteTerrain dock (left), or add a **LiteTerrain** node from the Create Node dialog. The collision and mesh helpers are managed internally — the node is a single clean entry in the scene tree.
 2. With the node selected, click **Generate Terrain** for a procedural base, then use the Raise/Lower/Flatten brush to hand-sculpt details.
 
-Manual wiring also works: any `StaticBody3D` with `map.gd` attached plus a `CollisionShape3D` child holding a `HeightMapShape3D` and a `MeshInstance3D` child.
+The heightmap and material are exposed as the node's **Terrain Shape** and **Terrain Material** inspector properties. Old-style scenes with visible `CollisionShape3D`/`MeshInstance3D` children are migrated automatically on load.
 
 ## Contents
 

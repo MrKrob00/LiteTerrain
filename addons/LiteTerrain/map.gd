@@ -64,6 +64,26 @@ const LOD_UPDATE_INTERVAL: float = 0.15
 # 4×4 = 16 chunks → 1 draw call instead of 16 (+ saves ~16 shadow passes).
 const MACRO_SIZE: int = 4
 
+# ── Terrain data ──────────────────────────────────────────────────────────────
+# The CollisionShape3D / MeshInstance3D children are hidden runtime helpers
+# (created without an owner, so they never show up in the Scene dock and are
+# not saved into the scene). All persistent state lives in these exports.
+
+## The heightmap terrain data (sculpt/generation edits go into its map_data).
+@export var terrain_shape: HeightMapShape3D = null:
+	set(value):
+		terrain_shape = value
+		if collision != null and is_instance_valid(collision):
+			collision.shape = value
+			update()
+
+## Material for the terrain mesh. Defaults to the bundled terrain shader.
+@export var terrain_material: Material = null:
+	set(value):
+		terrain_material = value
+		if mesh_instance != null and is_instance_valid(mesh_instance):
+			mesh_instance.material_override = value
+
 # Resolved in _refresh_refs(); a bare LiteTerrain node (no children yet)
 # must not hard-crash, so no @onready $-lookups here.
 var collision:     CollisionShape3D = null
@@ -158,8 +178,9 @@ func _ready() -> void:
 		# setting up (Create Node dialog / instantiation path).
 		_editor_setup.call_deferred()
 		return
+	_ensure_children()
 	if not _refresh_refs():
-		push_warning("LiteTerrain: node needs a CollisionShape3D child with a HeightMapShape3D and a MeshInstance3D child")
+		push_warning("LiteTerrain: terrain setup failed (no HeightMapShape3D)")
 		return
 	mesh_instance.visible = false
 	await get_tree().process_frame
@@ -188,11 +209,21 @@ func _refresh_refs() -> bool:
 	return true
 
 
-# Editor-only: create any missing children so a bare LiteTerrain node
-# (from the Create Node dialog or the dock button) works out of the box.
+# Editor entry point for node setup (deferred from _ready).
 func _editor_setup() -> void:
 	if not is_inside_tree():
 		return
+	_ensure_children()
+	update()
+
+
+# Create any missing helper children so a bare LiteTerrain node works out of
+# the box, in both the editor and the running game. The helpers get no owner:
+# they stay hidden in the Scene dock and are never saved into the scene —
+# persistent data lives in the terrain_shape / terrain_material exports.
+# Scenes saved with the old visible-children layout are adopted: their shape
+# and material migrate into the exports and the children go hidden.
+func _ensure_children() -> void:
 	collision = get_node_or_null("CollisionShape3D")
 	mesh_instance = get_node_or_null("MeshInstance3D")
 
@@ -200,32 +231,36 @@ func _editor_setup() -> void:
 		collision = CollisionShape3D.new()
 		collision.name = "CollisionShape3D"
 		add_child(collision)
-	if collision.shape == null:
-		var hm := HeightMapShape3D.new()
-		hm.map_width = DEFAULT_MAP_SIZE
-		hm.map_depth = DEFAULT_MAP_SIZE
-		var flat := PackedFloat32Array()
-		flat.resize(DEFAULT_MAP_SIZE * DEFAULT_MAP_SIZE)
-		hm.map_data = flat
-		collision.shape = hm
+	if terrain_shape == null and collision.shape is HeightMapShape3D:
+		terrain_shape = collision.shape          # adopt old-layout scene data
+	if terrain_shape == null:
+		terrain_shape = _make_flat_shape()
+	collision.shape = terrain_shape
 
 	if mesh_instance == null:
 		mesh_instance = MeshInstance3D.new()
 		mesh_instance.name = "MeshInstance3D"
+		add_child(mesh_instance)
+	if terrain_material == null:
+		terrain_material = mesh_instance.material_override
+	if terrain_material == null:
 		var mat_path := (get_script() as Script).resource_path.get_base_dir().path_join("terrain_shader.res")
 		if ResourceLoader.exists(mat_path):
-			mesh_instance.material_override = load(mat_path)
-		add_child(mesh_instance)
+			terrain_material = load(mat_path)
+	mesh_instance.material_override = terrain_material
 
-	# Persist auto-created children in the edited scene
-	var root := get_tree().edited_scene_root
-	if root != null and (root == self or root.is_ancestor_of(self)):
-		if collision.owner == null:
-			collision.owner = root
-		if mesh_instance.owner == null:
-			mesh_instance.owner = root
+	collision.owner = null
+	mesh_instance.owner = null
 
-	update()
+
+func _make_flat_shape() -> HeightMapShape3D:
+	var hm := HeightMapShape3D.new()
+	hm.map_width = DEFAULT_MAP_SIZE
+	hm.map_depth = DEFAULT_MAP_SIZE
+	var flat := PackedFloat32Array()
+	flat.resize(DEFAULT_MAP_SIZE * DEFAULT_MAP_SIZE)
+	hm.map_data = flat
+	return hm
 
 
 # ─────────────────────────────────────────────────────────────────────────────
