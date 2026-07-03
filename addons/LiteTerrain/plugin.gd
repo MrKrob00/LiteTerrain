@@ -12,6 +12,22 @@ var mode_label      = null
 
 var _dirty_chunks: Dictionary = {}
 
+# ── Stroke-level undo/redo (image mode) ──────────────────────────────────────
+# Image-режим правит md на месте — сам по себе он без истории. Чтобы Ctrl+Z/Ctrl+Y
+# работали по-человечески, снимаем снимок высот в НАЧАЛЕ мазка (кнопка нажата) и
+# коммитим ОДИН шаг истории в КОНЦЕ мазка (кнопка отпущена) — не по каждому пикселю.
+var _stroke_active := false
+var _stroke_before := PackedFloat32Array()
+
+# ── Dab spacing (throttle) ────────────────────────────────────────────────────
+# _sculpt зовётся на КАЖДОЕ движение мыши, а apply_brush крутит (2r+1)² ячеек. При
+# медленном ведении/дрожании это десятки перекрывающихся мазков в одну точку — чистая
+# лишняя работа. Наносим новый даб, только когда курсор отошёл от прошлого хотя бы на
+# долю радиуса (соседние дабы всё равно перекрываются, покрытие не страдает).
+const DAB_SPACING_FRAC := 0.25
+var _have_last_dab := false
+var _last_dab_pos  := Vector3.ZERO
+
 # ---------- Noise generation parameters ----------
 var gen_seed:             int   = 42
 var gen_scale:           float  = 150.0   # continental frequency scale
@@ -21,6 +37,7 @@ var gen_mountain_amount: float  = 0.8    # ridge contribution
 var gen_ridge_sharpness: float  = 2.5    # how knife-sharp ridges are
 var gen_amplitude:       float  = 30.0   # max height in world units
 var gen_smooth:           int   = 1      # blur passes after generation
+var gen_size:             int   = 0      # image-mode target size (0 = keep current)
 
 # ─────────────────────────────────────────────────
 # Helper builders
@@ -48,6 +65,10 @@ func _slider(mn: float, mx: float, val: float, step: float = 0.0) -> HSlider:
 # Dock UI
 # ─────────────────────────────────────────────────
 func _enter_tree() -> void:
+	# Подтягиваем сохранённые с прошлого раза настройки дока (кисть + генерация),
+	# чтобы не выставлять их заново при каждом заходе.
+	_load_settings()
+
 	# Wrap everything in a ScrollContainer so the dock is scrollable on tablets
 	var scroll = ScrollContainer.new()
 	scroll.name = "LiteTerrain"
@@ -59,19 +80,20 @@ func _enter_tree() -> void:
 	panel.custom_minimum_size = Vector2(220, 0)
 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
-	# ── Scene setup ─────────────────────────────
-	var add_node_btn = Button.new()
-	add_node_btn.text = "➕ Add LiteTerrain Node"
-	add_node_btn.tooltip_text = "Add a ready-to-sculpt LiteTerrain node (StaticBody3D + HeightMapShape3D + MeshInstance3D) to the current scene"
-	add_node_btn.pressed.connect(_add_terrain_node)
-	panel.add_child(add_node_btn)
-	panel.add_child(_sep())
+	# ── Setup: one-click terrain node ───────────
+	panel.add_child(_lbl("── Setup ──"))
+	var create_btn = Button.new()
+	create_btn.text = "➕ Create Terrain Node"
+	create_btn.tooltip_text = "Добавляет одну ноду LiteTerrain (image-режим, плоская 128×128). Дети создаются сами."
+	create_btn.pressed.connect(_create_terrain)
+	panel.add_child(create_btn)
 
 	# ── Sculpt ──────────────────────────────────
+	panel.add_child(_sep())
 	panel.add_child(_lbl("── Terrain Sculpt ──"))
 
 	panel.add_child(_lbl("Mode:"))
-	mode_label = _lbl("▲ Raise")
+	mode_label = _lbl(_mode_text())
 	panel.add_child(mode_label)
 
 	var raise_btn = Button.new()
@@ -89,30 +111,31 @@ func _enter_tree() -> void:
 	flatten_btn.pressed.connect(_on_flatten)
 	panel.add_child(flatten_btn)
 
-	var radius_label = _lbl("Radius: 3")
+	var radius_label = _lbl("Radius: " + str(snapped(brush_radius, 0.5)))
 	panel.add_child(radius_label)
-	radius_slider = _slider(1.0, 200.0, 3.0)
+	radius_slider = _slider(1.0, 200.0, brush_radius)
 	radius_slider.value_changed.connect(func(v: float) -> void:
 		brush_radius = v
 		radius_label.text = "Radius: " + str(snapped(v, 0.5))
 	)
+	radius_slider.drag_ended.connect(func(_c: bool) -> void: _save_settings())
 	panel.add_child(radius_slider)
 
-	var strength_label = _lbl("Strength: 10")
+	var strength_label = _lbl("Strength: " + str(int(round(brush_strength * 1000.0))))
 	panel.add_child(strength_label)
-	strength_slider = _slider(1.0, 1000.0, 10.0)
+	strength_slider = _slider(1.0, 1000.0, brush_strength * 1000.0)
 	strength_slider.value_changed.connect(func(v: float) -> void:
 		brush_strength = v / 1000.0
 		strength_label.text = "Strength: " + str(int(v))
 	)
+	strength_slider.drag_ended.connect(func(_c: bool) -> void: _save_settings())
 	panel.add_child(strength_slider)
 
 	# ── Noise Generation ─────────────────────────
 	panel.add_child(_sep())
 	panel.add_child(_lbl("── Noise Generation ──"))
 
-	# Seed
-	var seed_lbl = _lbl("Seed: 42")
+	var seed_lbl = _lbl("Seed: " + str(gen_seed))
 	panel.add_child(seed_lbl)
 	var seed_spin = SpinBox.new()
 	seed_spin.min_value = 0
@@ -121,21 +144,22 @@ func _enter_tree() -> void:
 	seed_spin.value_changed.connect(func(v: float) -> void:
 		gen_seed = int(v)
 		seed_lbl.text = "Seed: " + str(gen_seed)
+		_save_settings()
 	)
 	panel.add_child(seed_spin)
 
 	# Scale (continental frequency)
-	var scale_lbl = _lbl("Scale: 150")
+	var scale_lbl = _lbl("Scale: " + str(int(gen_scale)))
 	panel.add_child(scale_lbl)
 	var scale_sl = _slider(10.0, 600.0, gen_scale)
 	scale_sl.value_changed.connect(func(v: float) -> void:
 		gen_scale = v
 		scale_lbl.text = "Scale: " + str(int(v))
 	)
+	scale_sl.drag_ended.connect(func(_c: bool) -> void: _save_settings())
 	panel.add_child(scale_sl)
 
-	# Octaves
-	var oct_lbl = _lbl("Octaves: 6")
+	var oct_lbl = _lbl("Octaves: " + str(gen_octaves))
 	panel.add_child(oct_lbl)
 	var oct_spin = SpinBox.new()
 	oct_spin.min_value = 1
@@ -144,51 +168,56 @@ func _enter_tree() -> void:
 	oct_spin.value_changed.connect(func(v: float) -> void:
 		gen_octaves = int(v)
 		oct_lbl.text = "Octaves: " + str(gen_octaves)
+		_save_settings()
 	)
 	panel.add_child(oct_spin)
 
 	# Power curve  (^N — higher = flatter plains, sharper peaks)
-	var pow_lbl = _lbl("Plains Power (^N): 4.0")
+	var pow_lbl = _lbl("Plains Power (^N): " + str(snapped(gen_power, 0.1)))
 	panel.add_child(pow_lbl)
 	var pow_sl = _slider(1.0, 8.0, gen_power, 0.1)
 	pow_sl.value_changed.connect(func(v: float) -> void:
 		gen_power = v
 		pow_lbl.text = "Plains Power (^N): " + str(snapped(v, 0.1))
 	)
+	pow_sl.drag_ended.connect(func(_c: bool) -> void: _save_settings())
 	panel.add_child(pow_sl)
 
 	# Mountain ridge amount
-	var mount_lbl = _lbl("Mountains: 80 %")
+	var mount_lbl = _lbl("Mountains: " + str(int(gen_mountain_amount * 100)) + " %")
 	panel.add_child(mount_lbl)
 	var mount_sl = _slider(0.0, 1.0, gen_mountain_amount, 0.01)
 	mount_sl.value_changed.connect(func(v: float) -> void:
 		gen_mountain_amount = v
 		mount_lbl.text = "Mountains: " + str(int(v * 100)) + " %"
 	)
+	mount_sl.drag_ended.connect(func(_c: bool) -> void: _save_settings())
 	panel.add_child(mount_sl)
 
 	# Ridge sharpness  (higher = knife-edge ridges)
-	var ridge_lbl = _lbl("Ridge Sharpness: 2.5")
+	var ridge_lbl = _lbl("Ridge Sharpness: " + str(snapped(gen_ridge_sharpness, 0.1)))
 	panel.add_child(ridge_lbl)
 	var ridge_sl = _slider(1.0, 8.0, gen_ridge_sharpness, 0.1)
 	ridge_sl.value_changed.connect(func(v: float) -> void:
 		gen_ridge_sharpness = v
 		ridge_lbl.text = "Ridge Sharpness: " + str(snapped(v, 0.1))
 	)
+	ridge_sl.drag_ended.connect(func(_c: bool) -> void: _save_settings())
 	panel.add_child(ridge_sl)
 
 	# Amplitude (max height in world units)
-	var amp_lbl = _lbl("Amplitude: 30")
+	var amp_lbl = _lbl("Amplitude: " + str(int(gen_amplitude)))
 	panel.add_child(amp_lbl)
 	var amp_sl = _slider(1.0, 300.0, gen_amplitude)
 	amp_sl.value_changed.connect(func(v: float) -> void:
 		gen_amplitude = v
 		amp_lbl.text = "Amplitude: " + str(int(v))
 	)
+	amp_sl.drag_ended.connect(func(_c: bool) -> void: _save_settings())
 	panel.add_child(amp_sl)
 
 	# Smooth passes (simple box-blur after generation)
-	var smooth_lbl = _lbl("Smooth Passes: 1")
+	var smooth_lbl = _lbl("Smooth Passes: " + str(gen_smooth))
 	panel.add_child(smooth_lbl)
 	var smooth_spin = SpinBox.new()
 	smooth_spin.min_value = 0
@@ -197,19 +226,56 @@ func _enter_tree() -> void:
 	smooth_spin.value_changed.connect(func(v: float) -> void:
 		gen_smooth = int(v)
 		smooth_lbl.text = "Smooth Passes: " + str(gen_smooth)
+		_save_settings()
 	)
 	panel.add_child(smooth_spin)
+
+	# Map size (image mode only). 0 = keep the current size.
+	var size_lbl = _lbl("Map Size (0 = keep): " + str(gen_size))
+	panel.add_child(size_lbl)
+	var size_spin = SpinBox.new()
+	size_spin.min_value = 0
+	size_spin.max_value = 8192
+	size_spin.step      = 64
+	size_spin.value     = gen_size
+	size_spin.value_changed.connect(func(v: float) -> void:
+		gen_size = int(v)
+		size_lbl.text = "Map Size (0 = keep): " + str(gen_size)
+		_save_settings()
+	)
+	panel.add_child(size_spin)
 
 	var gen_btn = Button.new()
 	gen_btn.text = "🌍 Generate Terrain"
 	gen_btn.pressed.connect(_generate_noise)
 	panel.add_child(gen_btn)
 
+	# ── Bake → R32F heightmap image (runtime data source) ────────────────────
+	panel.add_child(_sep())
+	panel.add_child(_lbl("── Runtime Export ──"))
+	var bake_btn = Button.new()
+	bake_btn.text = "💾 Bake → files (height + mesh)"
+	bake_btn.pressed.connect(_bake_heightmap)
+	panel.add_child(bake_btn)
+
+	var png_btn = Button.new()
+	png_btn.text = "🖼 Generate PNG (heightmap)"
+	png_btn.tooltip_text = "Экспортирует карту высот в серый PNG (для миникарты/внешнего редактирования)."
+	png_btn.pressed.connect(_generate_png)
+	panel.add_child(png_btn)
+
+	var detach_btn = Button.new()
+	detach_btn.text = "✂ Detach big resources from scene"
+	detach_btn.pressed.connect(_detach_big_resources)
+	panel.add_child(detach_btn)
+
 	scroll.add_child(panel)
 	add_control_to_dock(DOCK_SLOT_LEFT_UL, scroll)
 
 
 func _exit_tree() -> void:
+	# Сохраняем состояние дока при закрытии редактора / отключении плагина.
+	_save_settings()
 	if panel:
 		var scroll = panel.get_parent()
 		if scroll:
@@ -221,47 +287,76 @@ func _exit_tree() -> void:
 
 
 # ─────────────────────────────────────────────────
-# Scene setup
-# ─────────────────────────────────────────────────
-# Adds a LiteTerrain node to the edited scene. map.gd auto-creates the
-# CollisionShape3D (HeightMapShape3D) and MeshInstance3D children in its
-# deferred editor setup, so the node is sculpt-ready immediately.
-func _add_terrain_node() -> void:
-	var root = get_editor_interface().get_edited_scene_root()
-	if root == null:
-		push_warning("LiteTerrain: open a scene before adding a terrain node")
-		return
-	var terrain: StaticBody3D = preload("map.gd").new()
-	terrain.name = "LiteTerrain"
-
-	var ur = get_undo_redo()
-	ur.create_action("Add LiteTerrain Node")
-	ur.add_do_method(root, "add_child", terrain, true)
-	ur.add_do_method(terrain, "set_owner", root)
-	ur.add_do_reference(terrain)
-	ur.add_undo_method(root, "remove_child", terrain)
-	ur.commit_action()
-
-	var selection = get_editor_interface().get_selection()
-	selection.clear()
-	selection.add_node(terrain)
-	sculpt_node = terrain
-
-
-# ─────────────────────────────────────────────────
 # Sculpt mode callbacks
 # ─────────────────────────────────────────────────
 func _on_raise() -> void:
 	sculpt_mode = "raise"
-	mode_label.text = "▲ Raise"
+	mode_label.text = _mode_text()
+	_save_settings()
 
 func _on_lower() -> void:
 	sculpt_mode = "lower"
-	mode_label.text = "▼ Lower"
+	mode_label.text = _mode_text()
+	_save_settings()
 
 func _on_flatten() -> void:
 	sculpt_mode = "flatten"
-	mode_label.text = "⬛ Flatten"
+	mode_label.text = _mode_text()
+	_save_settings()
+
+func _mode_text() -> String:
+	match sculpt_mode:
+		"lower":   return "▼ Lower"
+		"flatten": return "⬛ Flatten"
+		_:         return "▲ Raise"
+
+
+# ─────────────────────────────────────────────────
+# Persist the dock's brush + generation settings across editor sessions.
+# Хранится в per-project метаданных редактора (.godot/, не в репозитории), поэтому
+# на каждый заход подтягивается прошлое состояние — не надо выставлять всё заново.
+# ─────────────────────────────────────────────────
+const SETTINGS_META_SECTION := "lite_terrain"
+const SETTINGS_META_KEY      := "dock_settings"
+
+func _save_settings() -> void:
+	var es := EditorInterface.get_editor_settings()
+	if es == null:
+		return
+	es.set_project_metadata(SETTINGS_META_SECTION, SETTINGS_META_KEY, {
+		"brush_radius":        brush_radius,
+		"brush_strength":      brush_strength,
+		"sculpt_mode":         sculpt_mode,
+		"gen_seed":            gen_seed,
+		"gen_scale":           gen_scale,
+		"gen_octaves":         gen_octaves,
+		"gen_power":           gen_power,
+		"gen_mountain_amount": gen_mountain_amount,
+		"gen_ridge_sharpness": gen_ridge_sharpness,
+		"gen_amplitude":       gen_amplitude,
+		"gen_smooth":          gen_smooth,
+		"gen_size":            gen_size,
+	})
+
+func _load_settings() -> void:
+	var es := EditorInterface.get_editor_settings()
+	if es == null:
+		return
+	var d = es.get_project_metadata(SETTINGS_META_SECTION, SETTINGS_META_KEY, {})
+	if typeof(d) != TYPE_DICTIONARY:
+		return
+	brush_radius        = float(d.get("brush_radius",        brush_radius))
+	brush_strength      = float(d.get("brush_strength",      brush_strength))
+	sculpt_mode         = str(d.get("sculpt_mode",           sculpt_mode))
+	gen_seed            = int(d.get("gen_seed",              gen_seed))
+	gen_scale           = float(d.get("gen_scale",           gen_scale))
+	gen_octaves         = int(d.get("gen_octaves",           gen_octaves))
+	gen_power           = float(d.get("gen_power",           gen_power))
+	gen_mountain_amount = float(d.get("gen_mountain_amount", gen_mountain_amount))
+	gen_ridge_sharpness = float(d.get("gen_ridge_sharpness", gen_ridge_sharpness))
+	gen_amplitude       = float(d.get("gen_amplitude",       gen_amplitude))
+	gen_smooth          = int(d.get("gen_smooth",            gen_smooth))
+	gen_size            = int(d.get("gen_size",              gen_size))
 
 
 # ─────────────────────────────────────────────────
@@ -271,6 +366,11 @@ func _handles(object) -> bool:
 	return object is StaticBody3D or object is CollisionShape3D
 
 func _edit(object) -> void:
+	# Смена выбранного узла обрывает незакоммиченный мазок — чтобы снимок «до» одного
+	# террейна не применился к другому.
+	_stroke_active = false
+	_stroke_before = PackedFloat32Array()
+	_have_last_dab = false
 	if object is StaticBody3D:
 		sculpt_node = object
 	elif object is CollisionShape3D:
@@ -284,20 +384,33 @@ func _forward_3d_gui_input(viewport_camera: Camera3D, event: InputEvent) -> int:
 	if sculpt_node == null:
 		return EditorPlugin.AFTER_GUI_INPUT_PASS
 
+	# Feed the editor camera so map.gd can drive its editor LOD (editor_lod).
+	if sculpt_node.has_method("set_editor_camera"):
+		sculpt_node.set_editor_camera(viewport_camera)
+
 	if event is InputEventMouseButton:
+		# Колесо = размер кисти. Диапазон совпадает со слайдером (1..200), иначе прокрутка
+		# сбрасывала выставленный большой радиус до 20. Шаг пропорционален радиусу, чтобы
+		# большие кисти достигались за разумное число прокруток.
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP and event.pressed:
-			brush_radius = clamp(brush_radius + 0.5, 1.0, 20.0)
+			brush_radius = clamp(brush_radius + maxf(1.0, brush_radius * 0.15), 1.0, 200.0)
 			radius_slider.value = brush_radius
 			return EditorPlugin.AFTER_GUI_INPUT_STOP
 		if event.button_index == MOUSE_BUTTON_WHEEL_DOWN and event.pressed:
-			brush_radius = clamp(brush_radius - 0.5, 1.0, 20.0)
+			brush_radius = clamp(brush_radius - maxf(1.0, brush_radius * 0.15), 1.0, 200.0)
 			radius_slider.value = brush_radius
 			return EditorPlugin.AFTER_GUI_INPUT_STOP
 
-		if event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
+		if (event.button_index == MOUSE_BUTTON_LEFT or event.button_index == MOUSE_BUTTON_RIGHT) and not event.pressed:
 			if _dirty_chunks.size() > 0 and sculpt_node and sculpt_node.has_method("update_chunks"):
 				sculpt_node.update_chunks(_dirty_chunks.keys())
 				_dirty_chunks.clear()
+			# Мазок закончен, когда отпущена кнопка и ДРУГАЯ кисть-кнопка не зажата.
+			var other := MOUSE_BUTTON_RIGHT if event.button_index == MOUSE_BUTTON_LEFT else MOUSE_BUTTON_LEFT
+			if not Input.is_mouse_button_pressed(other):
+				_have_last_dab = false            # следующий мазок начнётся с чистого спейсинга
+				if _stroke_active:
+					_commit_stroke_undo()
 			return EditorPlugin.AFTER_GUI_INPUT_PASS
 
 	if event is InputEventMouseMotion or event is InputEventMouseButton:
@@ -310,16 +423,22 @@ func _forward_3d_gui_input(viewport_camera: Camera3D, event: InputEvent) -> int:
 		var ray_origin = viewport_camera.project_ray_origin(event.position)
 		var ray_dir    = viewport_camera.project_ray_normal(event.position)
 
-		var space = sculpt_node.get_world_3d().direct_space_state
-		var query = PhysicsRayQueryParameters3D.create(
-			ray_origin,
-			ray_origin + ray_dir * 1000.0
-		)
-		query.collide_with_bodies = true
-		var result = space.intersect_ray(query)
-
-		if result.is_empty():
-			return EditorPlugin.AFTER_GUI_INPUT_PASS
+		var hit_pos
+		if sculpt_node.has_method("is_image_mode") and sculpt_node.is_image_mode():
+			# Image mode: hit the heightmap by ray-marching it — no physics shape needed.
+			var rh = sculpt_node.raycast_heightmap(ray_origin, ray_dir)
+			if rh == null:
+				return EditorPlugin.AFTER_GUI_INPUT_PASS
+			hit_pos = rh
+		else:
+			var space = sculpt_node.get_world_3d().direct_space_state
+			var query = PhysicsRayQueryParameters3D.create(
+				ray_origin, ray_origin + ray_dir * 1000.0)
+			query.collide_with_bodies = true
+			var result = space.intersect_ray(query)
+			if result.is_empty():
+				return EditorPlugin.AFTER_GUI_INPUT_PASS
+			hit_pos = result.position
 
 		var raise = left
 		if sculpt_mode == "lower":
@@ -327,7 +446,16 @@ func _forward_3d_gui_input(viewport_camera: Camera3D, event: InputEvent) -> int:
 		elif sculpt_mode == "raise":
 			raise = true
 
-		_sculpt(result.position, raise)
+		# Спейсинг: пропускаем даб, если курсор не отошёл от прошлого на долю радиуса.
+		# Первый даб мазка нанести всегда (_have_last_dab = false). Событие всё равно
+		# гасим (STOP), чтобы камера не ехала во время рисования.
+		var spacing := maxf(1.0, brush_radius * DAB_SPACING_FRAC)
+		if _have_last_dab and hit_pos.distance_to(_last_dab_pos) < spacing:
+			return EditorPlugin.AFTER_GUI_INPUT_STOP
+		_last_dab_pos = hit_pos
+		_have_last_dab = true
+
+		_sculpt(hit_pos, raise)
 		return EditorPlugin.AFTER_GUI_INPUT_STOP
 
 	return EditorPlugin.AFTER_GUI_INPUT_PASS
@@ -337,6 +465,21 @@ func _forward_3d_gui_input(viewport_camera: Camera3D, event: InputEvent) -> int:
 # Sculpt brush
 # ─────────────────────────────────────────────────
 func _sculpt(hit_pos: Vector3, raise: bool) -> void:
+	# Image mode: edit the heightmap array directly, no HeightMapShape3D involved.
+	if sculpt_node.has_method("is_image_mode") and sculpt_node.is_image_mode():
+		# Начало мазка — снимаем снимок высот ДО правок (один раз на мазок) для undo.
+		if not _stroke_active:
+			_stroke_before = sculpt_node.get_heights().duplicate()
+			_stroke_active = true
+		var mode_int := 0
+		if sculpt_mode != "flatten":
+			mode_int = 1 if raise else -1
+		var dirty: PackedInt32Array = sculpt_node.apply_brush(
+				hit_pos, brush_radius, brush_strength, mode_int)
+		for ci in dirty:
+			_dirty_chunks[ci] = true
+		return
+
 	var col_shape = sculpt_node.get_node("CollisionShape3D")
 	if col_shape == null:
 		return
@@ -379,7 +522,9 @@ func _sculpt(hit_pos: Vector3, raise: bool) -> void:
 				if dist <= brush_radius:
 					var falloff = 1.0 - (dist / brush_radius)
 					var index   = z * width + x
-					map_data[index] = lerp(map_data[index], avg_height, falloff * brush_strength * 5.0)
+					# Вес lerp в [0,1] — тот же фикс, что и в image-режиме: *5 без клампа
+					# «перелетал» среднее при большой силе и ломал карту.
+					map_data[index] = lerp(map_data[index], avg_height, clampf(falloff * brush_strength, 0.0, 1.0))
 	else:
 		for z in range(z_min, z_max + 1):
 			for x in range(x_min, x_max + 1):
@@ -419,24 +564,285 @@ func _sculpt(hit_pos: Vector3, raise: bool) -> void:
 
 
 # ─────────────────────────────────────────────────
+# End of an image-mode stroke → one undo/redo step.
+# Snapshot «до» снят в начале мазка; сейчас берём «после» и регистрируем действие,
+# которое перекидывает всю карту высот между этими двумя состояниями. Ctrl+Z вернёт
+# карту к «до», Ctrl+Y — к «после». set_heightmap делает полную пересборку превью,
+# а _persist_heightmap переписывает .res, чтобы диск не отставал от undo/redo.
+# ─────────────────────────────────────────────────
+func _commit_stroke_undo() -> void:
+	_stroke_active = false
+	if sculpt_node == null or not (sculpt_node.has_method("is_image_mode") and sculpt_node.is_image_mode()):
+		return
+	var after: PackedFloat32Array = sculpt_node.get_heights().duplicate()
+	if _stroke_before.size() != after.size() or after.is_empty():
+		return
+	if _stroke_before == after:      # мазок ничего не изменил — не мусорим в истории
+		return
+	var dims: Vector2i = sculpt_node.get_dims()
+	var ur = get_undo_redo()
+	ur.create_action("Sculpt Terrain", UndoRedo.MERGE_DISABLE, sculpt_node)
+	ur.add_do_method(sculpt_node, "set_heightmap", after, dims.x, dims.y)
+	ur.add_do_method(self, "_persist_heightmap")
+	ur.add_undo_method(sculpt_node, "set_heightmap", _stroke_before, dims.x, dims.y)
+	ur.add_undo_method(self, "_persist_heightmap")
+	# execute=false: живое md уже равно «после», незачем гонять полную пересборку сразу.
+	ur.commit_action(false)
+	# …но .res на диске всё ещё «до» — синхронизируем один раз после мазка.
+	_persist_heightmap()
+	_stroke_before = PackedFloat32Array()
+
+
+# Переписывает R32F-карту высот в файл, который грузит нода (её heightmap_path), чтобы
+# диск не отставал от sculpt/undo/redo. Без этого правки жили бы только в памяти до Bake.
+func _persist_heightmap() -> void:
+	if sculpt_node == null or not sculpt_node.has_method("get_heights"):
+		return
+	var data: PackedFloat32Array = sculpt_node.get_heights()
+	var dims: Vector2i = sculpt_node.get_dims()
+	if dims.x <= 0 or dims.y <= 0 or data.size() != dims.x * dims.y:
+		return
+	var img := Image.create_from_data(dims.x, dims.y, false, Image.FORMAT_RF, data.to_byte_array())
+	ResourceSaver.save(img, _heightmap_target())
+
+
+# ─────────────────────────────────────────────────
+# Bake the sculpted HeightMapShape3D into an R32F image
+# ─────────────────────────────────────────────────
+# map.gd loads this image at runtime as the heightmap source of truth and builds a
+# small streaming collision window from it — so the map can be huge without the giant
+# HeightMapShape3D physics body. Run this whenever you change the terrain in-editor.
+const HEIGHTMAP_PATH := "res://addons/LiteTerrain/terrain_height.res"
+const MESH_PATH      := "res://addons/LiteTerrain/terrain_mesh.res"
+
+# Куда писать карту высот: ВСЕГДА в heightmap_path выбранной ноды (иначе бейк/генерация
+# сохранят в одно место, а нода грузит из другого — и после переоткрытия террейн пустой).
+# Фолбэк на константу, если у ноды путь пуст.
+func _heightmap_target() -> String:
+	if sculpt_node != null:
+		var p := str(sculpt_node.get("heightmap_path"))
+		if p != "":
+			return p
+	return HEIGHTMAP_PATH
+
+# PNG карты высот кладём рядом с самой картой (в папке heightmap_path), а не в корень
+# проекта — чтобы плагин не мусорил в чужом res://.
+func _heightmap_png_target() -> String:
+	return _heightmap_target().get_base_dir().path_join("terrain_heightmap.png")
+
+func _bake_heightmap() -> void:
+	if sculpt_node == null:
+		push_warning("LiteTerrain: select the terrain StaticBody3D node first")
+		return
+
+	var width: int
+	var depth: int
+	var data: PackedFloat32Array
+
+	if sculpt_node.has_method("is_image_mode") and sculpt_node.is_image_mode():
+		# Image mode: the heights live in md, NOT in the CollisionShape3D (which after
+		# 'Detach' is just a 2x2 placeholder — baking from it would wipe the heightmap).
+		var dims: Vector2i = sculpt_node.get_dims()
+		width  = dims.x
+		depth  = dims.y
+		data   = sculpt_node.get_heights()
+	else:
+		var col_shape = sculpt_node.get_node_or_null("CollisionShape3D")
+		if col_shape == null or not (col_shape.shape is HeightMapShape3D):
+			push_warning("LiteTerrain: no HeightMapShape3D found on the selected node")
+			return
+		var shape = col_shape.shape
+		width = shape.map_width
+		depth = shape.map_depth
+		data  = shape.map_data
+
+	if width <= 0 or depth <= 0 or data.size() != width * depth:
+		push_error("LiteTerrain: bad heightmap (%d values for %dx%d) — nothing baked" % [data.size(), width, depth])
+		return
+	# ── Physical: R32F heightmap image (runtime data + streaming collision) ──────
+	# Exact round-trip with md = img.get_data().to_float32_array().
+	var img := Image.create_from_data(width, depth, false, Image.FORMAT_RF, data.to_byte_array())
+	var hm_path := _heightmap_target()
+	var err := ResourceSaver.save(img, hm_path)
+	if err == OK:
+		print("LiteTerrain: baked heightmap %dx%d -> %s" % [width, depth, hm_path])
+	else:
+		push_error("LiteTerrain: failed to save heightmap (error %d)" % err)
+
+	# ── Visual: editor preview mesh → external .res ──────────────────────────────
+	# Without this the generated ArrayMesh is unique-to-scene and gets embedded into the
+	# .tscn on save (bloat + manual re-link each time). take_over_path() makes the live
+	# mesh point at the file, so the scene just references it externally.
+	var mi = sculpt_node.get_node_or_null("MeshInstance3D")
+	if mi != null and mi.mesh != null:
+		var merr := ResourceSaver.save(mi.mesh, MESH_PATH)
+		if merr == OK:
+			mi.mesh.take_over_path(MESH_PATH)
+			print("LiteTerrain: baked visual mesh → %s" % MESH_PATH)
+		else:
+			push_error("LiteTerrain: failed to save visual mesh (error %d)" % merr)
+	else:
+		push_warning("LiteTerrain: MeshInstance3D has no mesh to bake yet")
+
+
+# Кнопка «Create Terrain Node»: добавляет ОДНУ ноду LiteTerrain. CollisionShape3D и
+# MeshInstance3D она создаёт себе сама (_ensure_children), их вручную не собираем.
+const TERRAIN_SCRIPT   := "res://addons/LiteTerrain/map.gd"
+const NEW_MAP_SIZE     := 128
+const PLUGIN_HEIGHTMAP := "res://addons/LiteTerrain/terrain_height.res"
+
+func _create_terrain() -> void:
+	var root := EditorInterface.get_edited_scene_root()
+	if root == null:
+		push_warning("LiteTerrain: сначала открой сцену")
+		return
+	var script := load(TERRAIN_SCRIPT)
+	if script == null:
+		push_error("LiteTerrain: не нашёл %s" % TERRAIN_SCRIPT)
+		return
+
+	# Плоская стартовая карта высот в папку аддона — чтобы image-режим работал из коробки.
+	var flat := PackedFloat32Array()
+	flat.resize(NEW_MAP_SIZE * NEW_MAP_SIZE)
+	var img := Image.create_from_data(NEW_MAP_SIZE, NEW_MAP_SIZE, false, Image.FORMAT_RF, flat.to_byte_array())
+	ResourceSaver.save(img, PLUGIN_HEIGHTMAP)
+	EditorInterface.get_resource_filesystem().scan()
+
+	var body := StaticBody3D.new()
+	body.name = "LiteTerrain"
+	body.set_script(script)
+	body.set("heightmap_path", PLUGIN_HEIGHTMAP)
+
+	var parent: Node = root
+	var sel := EditorInterface.get_selection().get_selected_nodes()
+	if sel.size() > 0 and sel[0] is Node:
+		parent = sel[0]
+
+	# Одна нода. CollisionShape3D и MeshInstance3D она создаёт себе сама как ВНУТРЕННИЕ
+	# (в дереве сцены их не видно), а превью строит в _ready из запечённой плоской карты.
+	var ur := get_undo_redo()
+	ur.create_action("Create Terrain")
+	ur.add_do_method(parent, "add_child", body)
+	ur.add_do_method(body, "set_owner", root)
+	ur.add_do_reference(body)
+	ur.add_undo_method(parent, "remove_child", body)
+	ur.commit_action()
+
+	EditorInterface.get_selection().clear()
+	EditorInterface.get_selection().add_node(body)
+	print("LiteTerrain: создан узел LiteTerrain (%dx%d, image-режим). Дальше — Generate/Sculpt." % [NEW_MAP_SIZE, NEW_MAP_SIZE])
+
+
+# ─────────────────────────────────────────────────
+# Экспорт карты высот в серый PNG (нормируем высоты в 0..255). Годится для миникарты
+# или правки во внешнем редакторе. Данные берём как при bake (image-mode или из шейпа).
+# ─────────────────────────────────────────────────
+func _generate_png() -> void:
+	if sculpt_node == null:
+		push_warning("LiteTerrain: выбери узел террейна")
+		return
+	var width: int
+	var depth: int
+	var data: PackedFloat32Array
+	if sculpt_node.has_method("is_image_mode") and sculpt_node.is_image_mode():
+		var dims: Vector2i = sculpt_node.get_dims()
+		width = dims.x
+		depth = dims.y
+		data  = sculpt_node.get_heights()
+	else:
+		var col = sculpt_node.get_node_or_null("CollisionShape3D")
+		if col == null or not (col.shape is HeightMapShape3D):
+			push_warning("LiteTerrain: нет HeightMapShape3D")
+			return
+		width = col.shape.map_width
+		depth = col.shape.map_depth
+		data  = col.shape.map_data
+	if width <= 0 or depth <= 0 or data.size() != width * depth:
+		push_error("LiteTerrain: плохая карта высот (%d значений для %dx%d)" % [data.size(), width, depth])
+		return
+
+	var mn := INF
+	var mx := -INF
+	for h in data:
+		mn = minf(mn, h)
+		mx = maxf(mx, h)
+	var rng := maxf(mx - mn, 0.0001)
+
+	var img := Image.create(width, depth, false, Image.FORMAT_L8)
+	for z in depth:
+		for x in width:
+			var v := (data[z * width + x] - mn) / rng
+			img.set_pixel(x, z, Color(v, v, v))
+
+	var png_path := _heightmap_png_target()
+	var err := img.save_png(png_path)
+	if err == OK:
+		print("LiteTerrain: PNG карты высот %dx%d -> %s (мин %.1f, макс %.1f)" % [width, depth, png_path, mn, mx])
+		EditorInterface.get_resource_filesystem().scan()
+	else:
+		push_error("LiteTerrain: не удалось сохранить PNG (ошибка %d)" % err)
+
+
+# Replaces the big terrain.res / terrain_mesh.res references on the scene nodes with
+# tiny placeholders so saving the scene no longer drags in the huge resources. Use this
+# once you're in image mode (use_image_data ON + heightmap baked), then save the scene.
+func _detach_big_resources() -> void:
+	if sculpt_node == null:
+		push_warning("LiteTerrain: select the terrain StaticBody3D node first")
+		return
+	if not (sculpt_node.has_method("is_image_mode") and sculpt_node.is_image_mode()):
+		push_warning("LiteTerrain: enable 'Use Image Data' on the map and bake the heightmap first")
+		return
+	var col = sculpt_node.get_node_or_null("CollisionShape3D")
+	if col != null:
+		var small := HeightMapShape3D.new()
+		small.map_width = 2
+		small.map_depth = 2
+		col.shape = small
+	var mi = sculpt_node.get_node_or_null("MeshInstance3D")
+	if mi != null:
+		mi.mesh = null
+	print("LiteTerrain: detached big resources — now SAVE THE SCENE (Ctrl+S) to drop their refs.")
+
+
+# ─────────────────────────────────────────────────
 # Noise terrain generation
 # ─────────────────────────────────────────────────
 func _generate_noise() -> void:
+	_save_settings()   # фиксируем текущие параметры генерации на диск
 	if sculpt_node == null:
 		push_warning("LiteTerrain: select a terrain StaticBody3D node first")
 		return
-	var col_shape = sculpt_node.get_node_or_null("CollisionShape3D")
-	if col_shape == null:
-		push_warning("LiteTerrain: no CollisionShape3D child found")
-		return
-	var shape = col_shape.shape
-	if not shape is HeightMapShape3D:
-		push_warning("LiteTerrain: shape is not a HeightMapShape3D")
-		return
 
-	var width = shape.map_width
-	var depth = shape.map_depth
-	var map_data_old = shape.map_data.duplicate()
+	var image_mode: bool = sculpt_node.has_method("is_image_mode") and sculpt_node.is_image_mode()
+	var width: int
+	var depth: int
+	var shape = null
+	var map_data_old := PackedFloat32Array()
+
+	if image_mode:
+		# Size from the Map Size field (0 = keep current). This is how the map grows.
+		var dims: Vector2i = sculpt_node.get_dims()
+		width  = gen_size if gen_size > 0 else dims.x
+		depth  = gen_size if gen_size > 0 else dims.y
+		if width  <= 0: width  = 512
+		if depth  <= 0: depth  = 512
+	else:
+		var col_shape = sculpt_node.get_node_or_null("CollisionShape3D")
+		if col_shape == null:
+			push_warning("LiteTerrain: no CollisionShape3D child found")
+			return
+		shape = col_shape.shape
+		if not shape is HeightMapShape3D:
+			push_warning("LiteTerrain: shape is not a HeightMapShape3D")
+			return
+		width = shape.map_width
+		depth = shape.map_depth
+		map_data_old = shape.map_data.duplicate()
+
+	# Минимум по размеру карты — слишком мелкая (< 2 чанков) даёт вырожденные чанки и ошибки.
+	width  = maxi(width, 32)
+	depth  = maxi(depth, 32)
 
 	# ── Layer 1: Continental FBM ─────────────────
 	# Low-frequency simplex FBM defines the overall land masses.
@@ -510,14 +916,26 @@ func _generate_noise() -> void:
 				) * 0.2
 		new_data = buf
 
-	# ── Undo/redo + apply ────────────────────────
+	if image_mode:
+		# Set md + size, rebuild the editor preview, and write the heightmap image so the
+		# runtime (and re-opening the editor) loads it. No undo here — it's a full regen.
+		sculpt_node.set_heightmap(new_data, width, depth)
+		var img := Image.create_from_data(width, depth, false, Image.FORMAT_RF, new_data.to_byte_array())
+		var gm_path := _heightmap_target()
+		var gerr := ResourceSaver.save(img, gm_path)
+		if gerr == OK:
+			print("LiteTerrain: generated %dx%d -> %s" % [width, depth, gm_path])
+		else:
+			push_error("LiteTerrain: failed to save generated heightmap (error %d)" % gerr)
+		return
+
+	# ── Legacy (shape) undo/redo + apply ─────────
+	# Route BOTH the do and the undo through the node's apply_heightmap() so the whole
+	# action lives in the scene-node history. (Mixing add_do_property on the heightmap
+	# resource with add_do_method on the node caused "UndoRedo history mismatch".)
+	# custom_context = sculpt_node pins the action to the node's history as well.
 	var ur = get_undo_redo()
-	ur.create_action("Generate Terrain Noise")
-	ur.add_do_property(shape, "map_data", new_data)
-	ur.add_undo_property(shape, "map_data", map_data_old)
-	# add_do_method/add_undo_method: виконуються при commit та при redo/undo відповідно.
-	# Без цього undo відкочує map_data але меш залишається старим.
-	ur.add_do_method(sculpt_node, "update")
-	ur.add_undo_method(sculpt_node, "update")
+	ur.create_action("Generate Terrain Noise", UndoRedo.MERGE_DISABLE, sculpt_node)
+	ur.add_do_method(sculpt_node, "apply_heightmap", new_data)
+	ur.add_undo_method(sculpt_node, "apply_heightmap", map_data_old)
 	ur.commit_action()
-	# sculpt_node.update() вже викликається з commit_action() через add_do_method

@@ -2,15 +2,20 @@
 
 <img src="icon.png" width="128" align="right" alt="LiteTerrain icon">
 
-A lightweight Godot 4 editor plugin for sculpting and generating heightmap-based terrain directly in the 3D viewport. No baking pipeline, no external dependencies — one dock, a `HeightMapShape3D`, and you're sculpting.
+Lightweight heightmap terrain for Godot 4, tuned for mobile. One `LiteTerrain` node builds its own collision body, collision shape, and render mesh, then keeps the map cheap on weak hardware with quadtree LOD and streaming collision. An editor dock drives everything: creating, generating, sculpting, and baking terrain.
+
+Built and tuned on an Adreno 610 (a low-end mobile GPU), so the defaults lean toward performance.
 
 ## Features
 
-- **Sculpt brush** — raise, lower, and flatten terrain with a configurable radius/strength brush. Left-click to sculpt, mouse wheel to resize the brush.
-- **Procedural generation** — one-click terrain from continental FBM + ridge noise: seed, scale, octaves, plains power curve, mountain amount, ridge sharpness, amplitude, and smoothing controls.
-- **Chunked runtime renderer** — the included `map.gd` node renders the heightmap with LOD, frustum culling, horizon-based occlusion culling, and chunk streaming for large maps.
-- **Terrain shader** — height/slope-based texturing (sand / grass / rock / snow zones) with an optional tiled texture overlay.
-- Full undo/redo for both sculpting and generation.
+- **One-node terrain** — press "Create Terrain Node" in the dock (or add a `LiteTerrain` node) and you get a ready terrain: collision, mesh, and the terrain shader, with no manual wiring.
+- **Sculpt brushes** — Raise / Lower / Flatten with radius and strength, dab spacing for smooth strokes, and stroke-level undo/redo.
+- **Noise generation** — continental FBM + ridge noise with seed, scale, octaves, plains power, mountain amount, ridge sharpness, amplitude, smoothing, and target map size.
+- **Image-mode heightmaps** — the map lives in an R32F image instead of one giant `HeightMapShape3D`, so big maps load fast and stay light.
+- **Streaming collision** — collision windows follow every moving physics body automatically (RigidBody3D, VehicleBody3D, CharacterBody3D). No setup.
+- **Quadtree LOD + culling** — coarse far meshes with skirts, frustum culling, and render-distance control, tuned for mobile GPUs.
+- **Baking & export** — bake the heightmap and a preview mesh to `.res` files, or export the heightmap as a grayscale PNG.
+- **Terrain shader** — height/slope zone colors, world-space tile texturing, grass, and a `low_quality` toggle for weak GPUs.
 
 ## Installation
 
@@ -23,16 +28,15 @@ Search for **LiteTerrain** in the Godot editor's AssetLib tab, install, then ena
 
 ## Quick start
 
-1. Click **➕ Add LiteTerrain Node** in the LiteTerrain dock (left), or add a **LiteTerrain** node from the Create Node dialog. The collision and mesh helpers are managed internally — the node stays a single clean entry in the scene tree.
-2. With the node selected, hit **🌍 Generate Terrain** for a procedural base, then hand-sculpt with Raise / Lower / Flatten.
+1. Open a 3D scene and press **➕ Create Terrain Node** in the LiteTerrain dock.
+2. Press **Generate Terrain** for noise-based terrain, or sculpt by hand with Raise / Lower / Flatten (left mouse button paints, each stroke is one undo step).
+3. Press **Bake to files** when the map is ready, so it loads fast at runtime.
 
-The heightmap and material are exposed as the node's **Terrain Shape** and **Terrain Material** inspector properties. Scenes wired manually the old way (visible `CollisionShape3D` + `MeshInstance3D` children) are migrated automatically on load.
-
-See [`addons/LiteTerrain/README.md`](addons/LiteTerrain/README.md) for the full file-by-file breakdown.
+Full documentation — node properties, runtime API (`terrain_height_at`), physics details, performance tuning, shader reference, troubleshooting — is in [`addons/LiteTerrain/README.md`](addons/LiteTerrain/README.md).
 
 ## Compatibility
 
-Godot 4.x. The plugin edits standard `HeightMapShape3D` data, so it composes with anything else that consumes heightmaps.
+Godot 4.x. Compatibility (GLES3) renderer is recommended — the plugin is tuned for mobile — but it also runs on Forward+. Works with both Godot Physics and Jolt.
 
 ## License
 
