@@ -2,8 +2,8 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://bnj5v5pjwkhp7"
-path.etc2="res://.godot/imported/16.png-616b4c7f3de5eeeadcff6451684dbb82.etc2.ctex"
+uid="uid://day4hp25lva31"
+path.etc2="res://.godot/imported/9.png-548b4eb3c117d1776e2617420997cbe7.etc2.ctex"
 metadata={
 "imported_formats": ["etc2_astc"],
 "vram_texture": true
@@ -11,8 +11,8 @@ metadata={
 
 [deps]
 
-source_file="res://addons/LiteTerrain/Dark/16.png"
-dest_files=["res://.godot/imported/16.png-616b4c7f3de5eeeadcff6451684dbb82.etc2.ctex"]
+source_file="res://addons/lite_terrain/Dark/9.png"
+dest_files=["res://.godot/imported/9.png-548b4eb3c117d1776e2617420997cbe7.etc2.ctex"]
 
 [params]
 

@@ -2,7 +2,7 @@
 # с LOD/quadtree, стримингом коллизии и травяным шейдером. Плагин LiteTerrain собирает его
 # кнопкой и умеет генерить/лепить/бейкать. class_name — чтобы использовать как тип.
 @tool
-@icon("res://addons/LiteTerrain/icon.png")
+@icon("res://addons/lite_terrain/icon.png")
 class_name LiteTerrain
 extends StaticBody3D
 
@@ -21,7 +21,7 @@ var _cam: Camera3D = null
 ## ВНЕШНИЙ ВИД (тайл-текстура, texture_blend, tile_world_size, цвета зон, трава, low_quality)
 ## настраивается ПРЯМО НА МАТЕРИАЛЕ, в его Shader Parameters — это не дублируется в инспекторе
 ## ноды. Дефолты лежат в самом шейдере (glsl.gdshader) и в этом материале.
-@export var surface_material: Material = preload("res://addons/LiteTerrain/terrain_shader.res")
+@export var surface_material: Material = preload("res://addons/lite_terrain/terrain_shader.res")
 
 # Прячем в инспекторе настройки того, что выключено (чистый UX).
 func _validate_property(property: Dictionary) -> void:
@@ -100,7 +100,7 @@ const MACRO_SIZE: int = 4
 ## the visual chunks and the streaming collision. Bake it from the editor terrain via
 ## the plugin's "Bake heightmap → image" button. If missing, falls back at runtime to
 ## the embedded CollisionShape3D HeightMapShape3D data (so nothing breaks pre-bake).
-@export_file("*.res", "*.exr", "*.png") var heightmap_path: String = "res://addons/LiteTerrain/terrain_height.res"
+@export_file("*.res", "*.exr", "*.png") var heightmap_path: String = "res://addons/lite_terrain/terrain_height.res"
 
 ## Master decoupling switch. ON = the R32F image is the ONLY heightmap source, in the
 ## editor AND at runtime; the giant HeightMapShape3D is never used for data, the editor

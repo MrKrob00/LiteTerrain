@@ -612,8 +612,8 @@ func _persist_heightmap() -> void:
 # map.gd loads this image at runtime as the heightmap source of truth and builds a
 # small streaming collision window from it — so the map can be huge without the giant
 # HeightMapShape3D physics body. Run this whenever you change the terrain in-editor.
-const HEIGHTMAP_PATH := "res://addons/LiteTerrain/terrain_height.res"
-const MESH_PATH      := "res://addons/LiteTerrain/terrain_mesh.res"
+const HEIGHTMAP_PATH := "res://addons/lite_terrain/terrain_height.res"
+const MESH_PATH      := "res://addons/lite_terrain/terrain_mesh.res"
 
 # Куда писать карту высот: ВСЕГДА в heightmap_path выбранной ноды (иначе бейк/генерация
 # сохранят в одно место, а нода грузит из другого — и после переоткрытия террейн пустой).
@@ -687,9 +687,9 @@ func _bake_heightmap() -> void:
 
 # Кнопка «Create Terrain Node»: добавляет ОДНУ ноду LiteTerrain. CollisionShape3D и
 # MeshInstance3D она создаёт себе сама (_ensure_children), их вручную не собираем.
-const TERRAIN_SCRIPT   := "res://addons/LiteTerrain/map.gd"
+const TERRAIN_SCRIPT   := "res://addons/lite_terrain/map.gd"
 const NEW_MAP_SIZE     := 128
-const PLUGIN_HEIGHTMAP := "res://addons/LiteTerrain/terrain_height.res"
+const PLUGIN_HEIGHTMAP := "res://addons/lite_terrain/terrain_height.res"
 
 func _create_terrain() -> void:
 	var root := EditorInterface.get_edited_scene_root()

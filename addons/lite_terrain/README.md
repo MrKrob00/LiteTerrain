@@ -34,7 +34,7 @@ lean toward performance.
 
 ## Install
 
-1. Copy the `LiteTerrain` folder into your project's `res://addons/`.
+1. Copy the `lite_terrain` folder into your project's `res://addons/`.
 2. Open Project Settings, go to the Plugins tab, and enable LiteTerrain.
 3. A dock named LiteTerrain appears on the left. Everything is driven from there.
 

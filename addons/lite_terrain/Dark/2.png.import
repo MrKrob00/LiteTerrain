@@ -11,7 +11,7 @@ metadata={
 
 [deps]
 
-source_file="res://addons/LiteTerrain/Dark/2.png"
+source_file="res://addons/lite_terrain/Dark/2.png"
 dest_files=["res://.godot/imported/2.png-b09bd2f8fb7894d4aa2d73656b777ac9.etc2.ctex"]
 
 [params]

@@ -23,7 +23,7 @@ Built and tuned on an Adreno 610 (a low-end mobile GPU), so the defaults lean to
 Search for **LiteTerrain** in the Godot editor's AssetLib tab, install, then enable it in **Project > Project Settings > Plugins**.
 
 ### Manually
-1. Copy `addons/LiteTerrain/` into your project's `addons/` directory.
+1. Copy `addons/lite_terrain/` into your project's `addons/` directory.
 2. Enable **LiteTerrain** in **Project > Project Settings > Plugins**.
 
 ## Quick start
@@ -32,7 +32,7 @@ Search for **LiteTerrain** in the Godot editor's AssetLib tab, install, then ena
 2. Press **Generate Terrain** for noise-based terrain, or sculpt by hand with Raise / Lower / Flatten (left mouse button paints, each stroke is one undo step).
 3. Press **Bake to files** when the map is ready, so it loads fast at runtime.
 
-Full documentation — node properties, runtime API (`terrain_height_at`), physics details, performance tuning, shader reference, troubleshooting — is in [`addons/LiteTerrain/README.md`](addons/LiteTerrain/README.md).
+Full documentation — node properties, runtime API (`terrain_height_at`), physics details, performance tuning, shader reference, troubleshooting — is in [`addons/lite_terrain/README.md`](addons/lite_terrain/README.md).
 
 ## Compatibility
 
