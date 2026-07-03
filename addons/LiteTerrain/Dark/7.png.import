@@ -2,20 +2,21 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://3h7ueogvb78y"
-path="res://.godot/imported/8.png-89a710f00bbde5421a95d2bcf738303b.ctex"
+uid="uid://dpn32t274snr7"
+path.etc2="res://.godot/imported/7.png-4131b65893cf18916782fd3d63bb548f.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["etc2_astc"],
+"vram_texture": true
 }
 
 [deps]
 
-source_file="res://addons/terrain_sculpt/Dark/8.png"
-dest_files=["res://.godot/imported/8.png-89a710f00bbde5421a95d2bcf738303b.ctex"]
+source_file="res://addons/LiteTerrain/Dark/7.png"
+dest_files=["res://.godot/imported/7.png-4131b65893cf18916782fd3d63bb548f.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/uastc_level=0
@@ -23,7 +24,7 @@ compress/rdo_quality_loss=0.0
 compress/hdr_compression=1
 compress/normal_map=0
 compress/channel_pack=0
-mipmaps/generate=false
+mipmaps/generate=true
 mipmaps/limit=-1
 roughness/mode=0
 roughness/src_normal=""
@@ -37,4 +38,4 @@ process/normal_map_invert_y=false
 process/hdr_as_srgb=false
 process/hdr_clamp_exposure=false
 process/size_limit=0
-detect_3d/compress_to=1
+detect_3d/compress_to=0

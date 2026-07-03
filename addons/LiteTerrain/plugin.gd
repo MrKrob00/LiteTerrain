@@ -50,7 +50,7 @@ func _slider(mn: float, mx: float, val: float, step: float = 0.0) -> HSlider:
 func _enter_tree() -> void:
 	# Wrap everything in a ScrollContainer so the dock is scrollable on tablets
 	var scroll = ScrollContainer.new()
-	scroll.name = "Terraid3D"
+	scroll.name = "LiteTerrain"
 	scroll.custom_minimum_size = Vector2(220, 0)
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -387,15 +387,15 @@ func _sculpt(hit_pos: Vector3, raise: bool) -> void:
 # ─────────────────────────────────────────────────
 func _generate_noise() -> void:
 	if sculpt_node == null:
-		push_warning("Terraid3D: select a terrain StaticBody3D node first")
+		push_warning("LiteTerrain: select a terrain StaticBody3D node first")
 		return
 	var col_shape = sculpt_node.get_node_or_null("CollisionShape3D")
 	if col_shape == null:
-		push_warning("Terraid3D: no CollisionShape3D child found")
+		push_warning("LiteTerrain: no CollisionShape3D child found")
 		return
 	var shape = col_shape.shape
 	if not shape is HeightMapShape3D:
-		push_warning("Terraid3D: shape is not a HeightMapShape3D")
+		push_warning("LiteTerrain: shape is not a HeightMapShape3D")
 		return
 
 	var width = shape.map_width

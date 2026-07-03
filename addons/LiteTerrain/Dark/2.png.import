@@ -11,7 +11,7 @@ metadata={
 
 [deps]
 
-source_file="res://addons/terrain_sculpt/Dark/2.png"
+source_file="res://addons/LiteTerrain/Dark/2.png"
 dest_files=["res://.godot/imported/2.png-8debfa73473b12b242ea977a367cd752.etc2.ctex"]
 
 [params]
