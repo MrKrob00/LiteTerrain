@@ -1,6 +1,6 @@
 # LiteTerrain
 
-<img src="icon.png" width="128" align="right" alt="LiteTerrain icon">
+<img src="addons/lite_terrain/icon_256.png" width="128" align="right" alt="LiteTerrain icon">
 
 Lightweight heightmap terrain for Godot 4, tuned for mobile. One `LiteTerrain` node builds its own collision body, collision shape, and render mesh, then keeps the map cheap on weak hardware with quadtree LOD and streaming collision. An editor dock drives everything: creating, generating, sculpting, and baking terrain.
 
