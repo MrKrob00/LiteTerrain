@@ -1,5 +1,7 @@
 # map.gd
 @tool
+@icon("res://addons/LiteTerrain/lite_terrain.svg")
+class_name LiteTerrain
 extends StaticBody3D
 
 @export var camera: Camera3D
@@ -62,8 +64,14 @@ const LOD_UPDATE_INTERVAL: float = 0.15
 # 4×4 = 16 chunks → 1 draw call instead of 16 (+ saves ~16 shadow passes).
 const MACRO_SIZE: int = 4
 
-@onready var collision     = $CollisionShape3D
-@onready var mesh_instance = $MeshInstance3D
+# Resolved in _refresh_refs(); a bare LiteTerrain node (no children yet)
+# must not hard-crash, so no @onready $-lookups here.
+var collision:     CollisionShape3D = null
+var mesh_instance: MeshInstance3D   = null
+
+# Heightmap resolution used when the editor auto-creates the shape.
+# 257 = 16×16 chunks of chunk_size 16 (chunks span width-1 cells).
+const DEFAULT_MAP_SIZE: int = 257
 
 # ── Runtime chunk state ───────────────────────────────────────────────────────
 var _chunk_instances: Array[MeshInstance3D] = []
@@ -134,9 +142,11 @@ var _mat_lod0:     Material = null  # lod_grass_enabled = 1.0  (LOD 0, close)
 var _mat_lod_high: Material = null  # lod_grass_enabled = 0.0  (LOD 1+, distant)
 
 # ─────────────────────────────────────────────────────────────────────────────
-@onready var w  = collision.shape.map_width
-@onready var d  = collision.shape.map_depth
-@onready var md = collision.shape.map_data
+# Cached heightmap dimensions/data — refreshed by _refresh_refs() because the
+# plugin swaps shape.map_data through undo/redo after _ready() has run.
+var w:  int = 0
+var d:  int = 0
+var md: PackedFloat32Array = PackedFloat32Array()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Ready
@@ -144,7 +154,12 @@ var _mat_lod_high: Material = null  # lod_grass_enabled = 0.0  (LOD 1+, distant)
 
 func _ready() -> void:
 	if Engine.is_editor_hint():
-		update()
+		# Deferred: children cannot be added while the parent scene is still
+		# setting up (Create Node dialog / instantiation path).
+		_editor_setup.call_deferred()
+		return
+	if not _refresh_refs():
+		push_warning("LiteTerrain: node needs a CollisionShape3D child with a HeightMapShape3D and a MeshInstance3D child")
 		return
 	mesh_instance.visible = false
 	await get_tree().process_frame
@@ -156,17 +171,71 @@ func _ready() -> void:
 		_full_scan()
 
 
+# Resolve child references and cache heightmap dimensions.
+# Returns false while the node is not fully set up yet.
+func _refresh_refs() -> bool:
+	if collision == null or not is_instance_valid(collision):
+		collision = get_node_or_null("CollisionShape3D")
+	if mesh_instance == null or not is_instance_valid(mesh_instance):
+		mesh_instance = get_node_or_null("MeshInstance3D")
+	if collision == null or mesh_instance == null:
+		return false
+	if collision.shape == null or not (collision.shape is HeightMapShape3D):
+		return false
+	w  = collision.shape.map_width
+	d  = collision.shape.map_depth
+	md = collision.shape.map_data
+	return true
+
+
+# Editor-only: create any missing children so a bare LiteTerrain node
+# (from the Create Node dialog or the dock button) works out of the box.
+func _editor_setup() -> void:
+	if not is_inside_tree():
+		return
+	collision = get_node_or_null("CollisionShape3D")
+	mesh_instance = get_node_or_null("MeshInstance3D")
+
+	if collision == null:
+		collision = CollisionShape3D.new()
+		collision.name = "CollisionShape3D"
+		add_child(collision)
+	if collision.shape == null:
+		var hm := HeightMapShape3D.new()
+		hm.map_width = DEFAULT_MAP_SIZE
+		hm.map_depth = DEFAULT_MAP_SIZE
+		var flat := PackedFloat32Array()
+		flat.resize(DEFAULT_MAP_SIZE * DEFAULT_MAP_SIZE)
+		hm.map_data = flat
+		collision.shape = hm
+
+	if mesh_instance == null:
+		mesh_instance = MeshInstance3D.new()
+		mesh_instance.name = "MeshInstance3D"
+		var mat_path := (get_script() as Script).resource_path.get_base_dir().path_join("terrain_shader.res")
+		if ResourceLoader.exists(mat_path):
+			mesh_instance.material_override = load(mat_path)
+		add_child(mesh_instance)
+
+	# Persist auto-created children in the edited scene
+	var root := get_tree().edited_scene_root
+	if root != null and (root == self or root.is_ancestor_of(self)):
+		if collision.owner == null:
+			collision.owner = root
+		if mesh_instance.owner == null:
+			mesh_instance.owner = root
+
+	update()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Public API  (called by plugin.gd)
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Full rebuild — call after noise generation or on first open.
 func update() -> void:
-	if not is_node_ready() or collision == null or mesh_instance == null:
+	if not is_node_ready() or not _refresh_refs():
 		return
-	# @onready кешує map_data один раз при _ready(). Плагін змінює shape.map_data
-	# через undo/redo вже після цього, тому кеш застарілий — оновлюємо примусово.
-	md = collision.shape.map_data
 	if md.size() == 0:
 		return
 	if Engine.is_editor_hint():
@@ -180,7 +249,8 @@ func update_chunks(chunk_indices: Array) -> void:
 	if _ft_group_id >= 0:
 		WorkerThreadPool.wait_for_group_task_completion(_ft_group_id)
 		_ft_group_id = -1
-	md = collision.shape.map_data  # Refresh stale @onready cache (same reason as update())
+	if not _refresh_refs():        # also refreshes the md/w/d cache (see update())
+		return
 	if Engine.is_editor_hint():
 		if _ed_cache.is_empty():
 			update()
@@ -978,6 +1048,8 @@ func _setup_lod_materials(base_mat: Material) -> void:
 
 func _get_material() -> Material:
 	var mat: Material = null
+	if mesh_instance.material_override != null:
+		return mesh_instance.material_override
 	if mesh_instance.mesh != null and mesh_instance.mesh.get_surface_count() > 0:
 		mat = mesh_instance.get_surface_override_material(0)
 		if mat == null:

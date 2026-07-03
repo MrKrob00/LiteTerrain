@@ -59,6 +59,14 @@ func _enter_tree() -> void:
 	panel.custom_minimum_size = Vector2(220, 0)
 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
+	# ── Scene setup ─────────────────────────────
+	var add_node_btn = Button.new()
+	add_node_btn.text = "➕ Add LiteTerrain Node"
+	add_node_btn.tooltip_text = "Add a ready-to-sculpt LiteTerrain node (StaticBody3D + HeightMapShape3D + MeshInstance3D) to the current scene"
+	add_node_btn.pressed.connect(_add_terrain_node)
+	panel.add_child(add_node_btn)
+	panel.add_child(_sep())
+
 	# ── Sculpt ──────────────────────────────────
 	panel.add_child(_lbl("── Terrain Sculpt ──"))
 
@@ -210,6 +218,34 @@ func _exit_tree() -> void:
 		else:
 			remove_control_from_docks(panel)
 			panel.queue_free()
+
+
+# ─────────────────────────────────────────────────
+# Scene setup
+# ─────────────────────────────────────────────────
+# Adds a LiteTerrain node to the edited scene. map.gd auto-creates the
+# CollisionShape3D (HeightMapShape3D) and MeshInstance3D children in its
+# deferred editor setup, so the node is sculpt-ready immediately.
+func _add_terrain_node() -> void:
+	var root = get_editor_interface().get_edited_scene_root()
+	if root == null:
+		push_warning("LiteTerrain: open a scene before adding a terrain node")
+		return
+	var terrain: StaticBody3D = preload("map.gd").new()
+	terrain.name = "LiteTerrain"
+
+	var ur = get_undo_redo()
+	ur.create_action("Add LiteTerrain Node")
+	ur.add_do_method(root, "add_child", terrain, true)
+	ur.add_do_method(terrain, "set_owner", root)
+	ur.add_do_reference(terrain)
+	ur.add_undo_method(root, "remove_child", terrain)
+	ur.commit_action()
+
+	var selection = get_editor_interface().get_selection()
+	selection.clear()
+	selection.add_node(terrain)
+	sculpt_node = terrain
 
 
 # ─────────────────────────────────────────────────

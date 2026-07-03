@@ -23,11 +23,10 @@ Search for **LiteTerrain** in the Godot editor's AssetLib tab, install, then ena
 
 ## Quick start
 
-1. Add a `StaticBody3D` to your scene and attach `addons/LiteTerrain/map.gd` to it.
-2. Add a `CollisionShape3D` child and assign it a new `HeightMapShape3D` (set the map width/depth).
-3. Add a `MeshInstance3D` child; assign `addons/LiteTerrain/terrain_shader.res` as its material for the built-in zone texturing.
-4. Select the `StaticBody3D` — the **LiteTerrain** dock appears on the left.
-5. Hit **🌍 Generate Terrain** for a procedural base, then hand-sculpt with Raise / Lower / Flatten.
+1. Click **➕ Add LiteTerrain Node** in the LiteTerrain dock (left), or add a **LiteTerrain** node from the Create Node dialog. The `CollisionShape3D` (with a `HeightMapShape3D`) and `MeshInstance3D` (with the terrain material) children are created automatically.
+2. With the node selected, hit **🌍 Generate Terrain** for a procedural base, then hand-sculpt with Raise / Lower / Flatten.
+
+Manual wiring still works too: any `StaticBody3D` with `map.gd` attached, a `CollisionShape3D` child holding a `HeightMapShape3D`, and a `MeshInstance3D` child is a valid terrain.
 
 See [`addons/LiteTerrain/README.md`](addons/LiteTerrain/README.md) for the full file-by-file breakdown.
 
