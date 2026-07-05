@@ -1,31 +1,31 @@
-# map.gd — узел террейна LiteTerrain: StaticBody3D + HeightMapShape3D-коллизия + ArrayMesh,
-# с LOD/quadtree, стримингом коллизии и травяным шейдером. Плагин LiteTerrain собирает его
-# кнопкой и умеет генерить/лепить/бейкать. class_name — чтобы использовать как тип.
+# map.gd — the LiteTerrain terrain node: StaticBody3D + HeightMapShape3D collision + ArrayMesh,
+# with quadtree LOD, streaming collision, and a grass shader. The LiteTerrain plugin assembles it
+# with one button and can generate/sculpt/bake. class_name so it can be used as a type.
 @tool
 @icon("res://addons/lite_terrain/icon.png")
 class_name LiteTerrain
 extends StaticBody3D
 
-## Камера для LOD и куллинга. МОЖНО НЕ ЗАДАВАТЬ: по умолчанию берётся текущая активная
-## камера (get_viewport().get_camera_3d()), и террейн следует за ней даже при переключении
-## камер. Задай вручную, только если LOD нужно считать от ДРУГОЙ камеры, не активной.
+## Camera used for LOD and culling. CAN BE LEFT EMPTY: by default the current active
+## camera is used (get_viewport().get_camera_3d()) and the terrain follows it even across
+## camera switches. Set it manually only if LOD must be computed from a DIFFERENT, non-active camera.
 @export var camera: Camera3D
 
-# Эффективная камера этого кадра: ручная (если задана и жива) или текущая активная.
-# Обновляется каждый кадр в _process, поэтому назначать ничего не нужно.
+# Effective camera for this frame: the manual one (if set and alive) or the current active one.
+# Refreshed every frame in _process, so nothing needs to be assigned.
 var _cam: Camera3D = null
 
-## Материал поверхности. По умолчанию — шейдер террейна из аддона (цвета зон + трава), чтобы
-## свежесозданная нода сразу выглядела нормально. Можешь подставить свой ShaderMaterial.
+## Surface material. Defaults to the addon's terrain shader (zone colors + grass) so a
+## freshly created node looks right immediately. You can plug in your own ShaderMaterial.
 ##
-## ВНЕШНИЙ ВИД (тайл-текстура, texture_blend, tile_world_size, цвета зон, трава, low_quality)
-## настраивается ПРЯМО НА МАТЕРИАЛЕ, в его Shader Parameters — это не дублируется в инспекторе
-## ноды. Дефолты лежат в самом шейдере (glsl.gdshader) и в этом материале.
+## APPEARANCE (tile texture, texture_blend, tile_world_size, zone colors, grass, low_quality)
+## is configured DIRECTLY ON THE MATERIAL, in its Shader Parameters — it is not duplicated in the
+## node's inspector. The defaults live in the shader itself (glsl.gdshader) and in this material.
 @export var surface_material: Material = preload("res://addons/lite_terrain/terrain_shader.res")
 
-# Прячем в инспекторе настройки того, что выключено (чистый UX).
+# Hide inspector settings for features that are switched off (cleaner UX).
 func _validate_property(property: Dictionary) -> void:
-	# heightmap_path нужен только в image-режиме.
+	# heightmap_path is only needed in image mode.
 	if property.name == "heightmap_path" and not use_image_data:
 		property.usage = PROPERTY_USAGE_NO_EDITOR
 @export_range(-0.5, 0.5, 0.01) var frustum_margin: float = -0.05
@@ -111,7 +111,7 @@ const MACRO_SIZE: int = 4
 @export var use_image_data: bool = true:
 	set(v):
 		use_image_data = v
-		notify_property_list_changed()   # прячет/показывает heightmap_path
+		notify_property_list_changed()   # hides/shows heightmap_path
 
 # ── Streaming collision settings ──────────────────────────────────────────────
 ## Master switch. OFF (default) = current behaviour: the embedded HeightMapShape3D is
@@ -138,16 +138,16 @@ const MACRO_SIZE: int = 4
 ## (same-height) surface, so the wheel always rolls on continuous ground. 0 = old behaviour.
 @export_range(0, 32, 1) var collision_overlap:  int = 8
 
-# Дочерние ноды больше НЕ обязательны в сцене — нода создаёт их сама (см. _ensure_children),
-# так что LiteTerrain можно просто добавить одной нодой, без ручной сборки CollisionShape3D +
-# MeshInstance3D. Если они уже есть в сцене — берём существующие.
+# Child nodes are NO LONGER required in the scene — the node creates them itself (see _ensure_children),
+# so a LiteTerrain can be added as a single node, with no manual CollisionShape3D +
+# MeshInstance3D assembly. If they already exist in the scene, the existing ones are used.
 var collision: CollisionShape3D = null
 var mesh_instance: MeshInstance3D = null
 
-# Гарантирует наличие CollisionShape3D и MeshInstance3D. Создаёт их как ВНУТРЕННИЕ
-# (INTERNAL_MODE_BACK): они не показываются в дереве сцены, не сохраняются в .tscn и
-# управляются самой нодой — так что LiteTerrain остаётся одной чистой нодой. get_node
-# по-прежнему находит их по имени, поэтому повторный вызов не плодит дубликаты.
+# Guarantees the CollisionShape3D and MeshInstance3D exist. Creates them as INTERNAL
+# (INTERNAL_MODE_BACK): they are not shown in the scene tree, not saved into the .tscn, and
+# are managed by the node itself — so LiteTerrain stays one clean node. get_node still
+# finds them by name, so calling this again does not create duplicates.
 func _ensure_children() -> void:
 	collision = get_node_or_null("CollisionShape3D") as CollisionShape3D
 	if collision == null:
@@ -240,7 +240,7 @@ var _qt_size:  Array[float] = []   # node → max world XZ extent (LOD-selection
 var _qt_inst:  Array        = []   # node → MeshInstance3D (internal nodes only; null for leaves)
 var _qt_node_results: Array = []   # threaded coarse-mesh build scratch
 const QT_QUALITY: float = 1.1      # render a node coarsely once dist ≥ size * this (lower = coarser/faster)
-const QT_SKIRT:   float = 0.0      # юбку убрали (была видна свисающей у краёв LOD-узлов)
+const QT_SKIRT:   float = 0.0      # skirts removed (they were visible hanging at the edges of LOD nodes)
 # Currently-rendered selection, kept for cheap show/hide diffing each frame.
 var _qt_cur_macros: Dictionary = {}   # mi → true (macro mesh currently visible)
 var _qt_cur_chunks: Dictionary = {}   # ci → lod  (chunk currently rendered individually)
@@ -298,10 +298,10 @@ func _ready() -> void:
 	_ensure_children()
 	if Engine.is_editor_hint():
 		if use_image_data and _load_heightmap_image() != null:
-			# Image-режим: R32F terrain_height.res — источник истины. Внутренний MeshInstance3D
-			# в сцену не сохраняется, поэтому если превью-меша ещё нет — строим его из карты
-			# высот. Если меш уже задан (старые сцены с внешним terrain_mesh.res) — не трогаем,
-			# чтобы не вшить большой меш в .tscn.
+			# Image mode: the R32F terrain_height.res is the source of truth. The internal MeshInstance3D
+			# is not saved into the scene, so if there is no preview mesh yet, build it from the
+			# heightmap. If a mesh is already set (old scenes with an external terrain_mesh.res), leave it
+			# alone so a big mesh doesn't get embedded into the .tscn.
 			_load_heightmap()
 			if mesh_instance.mesh == null:
 				_rebuild_editor_full()
@@ -608,10 +608,10 @@ func _sample_height_local(lx: float, lz: float) -> float:
 	var h1 = lerp(md[z1 * w + x0], md[z1 * w + x1], fx)
 	return lerp(h0, h1, fz)
 
-# Верхняя граница высот карты (локальные единицы). Нужна только редакторному
-# raycast_heightmap: выше неё террейна заведомо нет, поэтому пустой воздух над самым
-# высоким пиком можно промотать без сэмплов. Держим её всегда ≥ реального максимума —
-# точный пересчёт на загрузке/генерации/undo, а кисть-подъём лишь поднимает её.
+# Upper bound of the map heights (local units). Needed only by the editor's
+# raycast_heightmap: there is guaranteed to be no terrain above it, so the empty air above the
+# highest peak can be skipped without sampling. Kept always >= the real maximum — exact
+# recompute on load/generate/undo, while the raise brush only pushes it up.
 var _md_max := 0.0
 
 func _recompute_height_bound() -> void:
@@ -633,9 +633,9 @@ func raycast_heightmap(from_world: Vector3, dir_world: Vector3) -> Variant:
 	var dir := (inv.basis * dir_world).normalized()
 	var max_t := float(maxi(w, d)) * 2.0
 	var t := 0.0
-	# Промотка пустого воздуха: пока луч идёт вниз и выше самого высокого пика (_md_max),
-	# сэмплить нечего — прыгаем сразу к плоскости y = _md_max (минус 1, чтобы стартовать
-	# чуть выше и сохранить prev_gap > 0). Безопасно: выше _md_max террейна нет.
+	# Skip empty air: while the ray is going down and is above the highest peak (_md_max)
+	# there is nothing to sample — jump straight to the plane y = _md_max (minus 1 to start
+	# slightly above and keep prev_gap > 0). Safe: there is no terrain above _md_max.
 	if dir.y < -1e-6 and o.y > _md_max:
 		t = maxf(0.0, (o.y - _md_max) / -dir.y - 1.0)
 	var p0 := o + dir * t
@@ -673,9 +673,9 @@ func apply_brush(center_world: Vector3, radius: float, strength: float, mode: in
 	var x_max := clampi(cx + r, 0, w - 1)
 	var z_min := clampi(cz - r, 0, d - 1)
 	var z_max := clampi(cz + r, 0, d - 1)
-	# Горячий путь — крутится на КАЖДОЕ движение мыши по (2r+1)² ячейкам. Поэтому:
-	# сравниваем квадраты расстояний (sqrt только для принятых ячеек, не в отсеве);
-	# без аллокаций Vector2; выносим за цикл базу строки (row) и постоянные множители.
+	# Hot path — runs on EVERY mouse move over (2r+1)² cells. Therefore:
+	# compare squared distances (sqrt only for accepted cells, not during rejection);
+	# no Vector2 allocations; hoist the row base and constant factors out of the loop.
 	var r2 := radius * radius
 	var inv_r := 1.0 / radius
 	var avg := 0.0
@@ -693,7 +693,7 @@ func apply_brush(center_world: Vector3, radius: float, strength: float, mode: in
 		if cnt > 0:
 			avg /= float(cnt)
 
-	var add := float(mode) * strength      # raise/lower: постоянная часть — вне цикла
+	var add := float(mode) * strength      # raise/lower: the constant part, hoisted out of the loop
 	for z in range(z_min, z_max + 1):
 		var dz := z - cz
 		var dz2 := dz * dz
@@ -706,12 +706,12 @@ func apply_brush(center_world: Vector3, radius: float, strength: float, mode: in
 			var falloff := 1.0 - sqrt(float(d2)) * inv_r
 			var idx := row + x
 			if mode == 0:
-				# Flatten: тянем к среднему. Вес в [0,1] (falloff≤1, strength≤1); кламп —
-				# страховка от strength>1, чтобы lerp не «перелетал» среднее и не ломал карту.
+				# Flatten: pull toward the average. Weight in [0,1] (falloff≤1, strength≤1); the clamp
+				# guards against strength>1 so lerp doesn't overshoot the average and break the map.
 				md[idx] = lerp(md[idx], avg, clampf(falloff * strength, 0.0, 1.0))
 			else:
 				md[idx] += add * falloff
-				if md[idx] > _md_max:      # держим верхнюю границу высот актуальной (для raycast)
+				if md[idx] > _md_max:      # keep the height upper bound current (for raycast)
 					_md_max = md[idx]
 	# Touched editor chunks (so the plugin can rebuild just those).
 	if _ed_cx > 0:
@@ -1509,8 +1509,8 @@ func _compute_chunk_data(x0: int, z0: int, x1: int, z1: int, step: int = 1,
 	var sz = maxi(1, step)
 	var xs = _sample_range(x0, x1, sz)
 	var zs = _sample_range(z0, z1, sz)
-	# Вырожденный чанк (меньше 2×2 сэмплов) — квадов не построить. На маленьких картах это
-	# ловило ошибку сборки меша: возвращаем пусто, такой чанк просто не рисуется.
+	# Degenerate chunk (fewer than 2×2 samples) — no quads can be built. On small maps this
+	# used to trigger a mesh build error: return empty, such a chunk simply isn't drawn.
 	if xs.size() < 2 or zs.size() < 2:
 		return []
 
@@ -1526,9 +1526,9 @@ func _compute_chunk_data(x0: int, z0: int, x1: int, z1: int, step: int = 1,
 			# Guarantee: chunk_size=16 is divisible by all possible steps (1,2,4,8),
 			# so x0/z0 are always aligned with the neighbour grid — no clamping needed.
 
-			# Соседний сэмпл (x-rem+step / z-rem+step) может выйти за КРАЙ карты на самой
-			# внешней границе (там соседнего чанка нет), давая индекс на строку/столбец за
-			# пределами md — отсюда падало "Invalid access". Верхний индекс клампим к краю.
+			# The neighbour sample (x-rem+step / z-rem+step) can go past the map EDGE on the outermost
+			# border (there is no neighbour chunk there), giving an index one row/column beyond
+			# md — that's where "Invalid access" came from. Clamp the upper index to the edge.
 
 			# North border (z == z0): snap x to n_step grid
 			if z == z0 and n_step > step:
@@ -1671,9 +1671,9 @@ func _compute_chunk_data(x0: int, z0: int, x1: int, z1: int, step: int = 1,
 # shader-parameter slots consumed, so the GLES3 4096-slot buffer is never touched.
 func _setup_lod_materials(base_mat: Material) -> void:
 	if base_mat is ShaderMaterial:
-		# Дублируем базовый материал: все параметры внешнего вида (тайл-текстура, blend,
-		# tile_world_size, цвета, трава, low_quality) наследуются из него как есть — нода их
-		# не трогает, их настраивают на самом материале. Отличается только lod_grass_enabled.
+		# Duplicate the base material: all appearance parameters (tile texture, blend,
+		# tile_world_size, colors, grass, low_quality) are inherited from it as-is — the node doesn't
+		# touch them, they are configured on the material itself. Only lod_grass_enabled differs.
 		_mat_lod0 = base_mat.duplicate()
 		(_mat_lod0 as ShaderMaterial).set_shader_parameter("lod_grass_enabled", 1.0)
 		_mat_lod_high = base_mat.duplicate()
@@ -1701,7 +1701,7 @@ func _get_material() -> Material:
 		if mat == null:
 			mat = mesh_instance.mesh.surface_get_material(0)
 	if mat == null and surface_material != null:
-		mat = surface_material            # свежая нода → шейдер террейна из аддона
+		mat = surface_material            # fresh node → the addon's terrain shader
 	if mat == null:
 		mat = StandardMaterial3D.new()
 	return mat
@@ -1711,9 +1711,9 @@ func _get_material() -> Material:
 # Camera / frustum culling  (runtime only)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Текущая рабочая камера: ручной оверрайд (если задан и валиден) либо активная камера
-# вьюпорта. get_viewport().get_camera_3d() всегда возвращает ту камеру, которой сейчас
-# рисуется сцена, — включая переключения, spring-arm и т.п. Ничего искать по дереву не надо.
+# Current working camera: the manual override (if set and valid) or the viewport's active
+# camera. get_viewport().get_camera_3d() always returns the camera the scene is currently
+# rendered with — including switches, spring-arms, etc. No tree searching needed.
 func _active_camera() -> Camera3D:
 	if is_instance_valid(camera):
 		return camera
@@ -1726,16 +1726,16 @@ func _process(delta: float) -> void:
 			_editor_lod_tick(delta)
 		return
 
-	# Текущая активная камера — каждый кадр, без ручного назначения. Следует за
-	# переключением камер (например, смена вида при смерти/пересадке в машину).
+	# The current active camera — every frame, with no manual assignment. Follows camera
+	# switches (e.g. the view change on death / getting into a vehicle).
 	_cam = _active_camera()
 
 	# ── Streaming collision: keep tiled collision cells under the tracked bodies ──
-	# Коллизии камера не нужна — обновляем даже когда активной камеры ещё нет.
+	# Collision doesn't need a camera — update it even when there is no active camera yet.
 	if _col_active:
 		_update_collision_cells()
 
-	# Всё дальше (стриминг чанков, LOD, куллинг) зависит от камеры.
+	# Everything below (chunk streaming, LOD, culling) depends on the camera.
 	if _cam == null:
 		return
 

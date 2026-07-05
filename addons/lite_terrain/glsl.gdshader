@@ -2,18 +2,18 @@ shader_type spatial;
 render_mode diffuse_lambert;
 
 group_uniforms Quality;
-// Низкое качество для слабого железа (fill-bound): выключает попиксельный шум и тайл-текстуру.
+// Low quality for weak (fill-bound) hardware: disables per-pixel noise and the tile texture.
 uniform bool low_quality = false;
 
 group_uniforms Texture;
 uniform sampler2D tile_texture : source_color, filter_nearest;
-// Размер тайла в мировых юнитах. Тайлинг считается из мировых XZ (см. vertex()), поэтому
-// подстраивается под любой размер карты и одинаков в игре и в редакторе.
+// Tile size in world units. Tiling is computed from world-space XZ (see vertex()), so it
+// adapts to any map size and looks the same in game and in the editor.
 uniform float tile_world_size  : hint_range(0.1, 100.0) = 1.0;
 uniform float texture_blend    : hint_range(0.0, 1.0)    = 0.1;
 
-// Квантизация v_pixel_uv к сетке, чтобы шум и трава были стабильны по ячейке, а не мерцали
-// по фрагментам. Константа, а не uniform — это не настройка вида.
+// Quantize v_pixel_uv to a grid so noise and grass are stable per cell instead of flickering
+// per fragment. A constant, not a uniform — this is not a look setting.
 const float PIXELS_PER_TILE = 16.0;
 
 group_uniforms Colors;
@@ -39,8 +39,8 @@ uniform float bend_radius       : hint_range(0.1, 10.0)   = 1.5;
 uniform float lod_grass_enabled : hint_range(0.0, 1.0)    = 1.0;
 
 group_uniforms Trample;
-// Карта примятия травы (кормит grass.gd через SubViewport). Чёрная по умолчанию = нет
-// эффекта, можно не подключать.
+// Grass trample map (fed by grass.gd through a SubViewport). Black by default = no
+// effect; it can be left unconnected.
 uniform sampler2D trample_map : hint_default_black, filter_linear;
 uniform vec2  trample_center = vec2(0.0);
 uniform float trample_size   = 130.0;
@@ -65,10 +65,10 @@ void vertex() {
 
     v_is_grass = 0.0;
 
-    // COLOR.r < 0.5 помечает вершины на границе чанка: там смещение травы пропускаем, чтобы
-    // шов (особенно на границе LOD) остался на сшитой базовой поверхности. Меши без vertex
-    // colours дают COLOR = белый. lod_grass_enabled = 1.0 только на ближнем (LOD-0) материале,
-    // так что трава смещается лишь вблизи, где её видно.
+    // COLOR.r < 0.5 marks vertices on a chunk border: grass displacement is skipped there so the
+    // seam (especially at LOD boundaries) stays on the stitched base surface. Meshes without vertex
+    // colours give COLOR = white. lod_grass_enabled = 1.0 only on the near (LOD-0) material,
+    // so grass is displaced only up close where it is visible.
     if (lod_grass_enabled > 0.5 && COLOR.r > 0.5 && v_world_height >= grass_min_height && v_world_height <= grass_max_height) {
         if (hash2D(v_pixel_uv) < grass_density) {
             vec3 offset = NORMAL * grass_height;
@@ -84,7 +84,7 @@ void vertex() {
 }
 
 void fragment() {
-    // Высотные зоны: песок -> трава -> снег.
+    // Height zones: sand -> grass -> snow.
     float t_grass = smoothstep(height_grass_start - zone_blend,
                                 height_grass_start + zone_blend, v_world_height);
     float t_snow  = smoothstep(height_snow_start  - zone_blend,
@@ -93,12 +93,12 @@ void fragment() {
     vec3 zone_col = mix(color_sand.rgb, color_grass.rgb, t_grass);
     zone_col      = mix(zone_col,       color_snow.rgb,  t_snow);
 
-    // Крутые склоны -> камень.
+    // Steep slopes -> rock.
     float rock_t  = 1.0 - smoothstep(rock_threshold - rock_blend,
                                        rock_threshold + rock_blend, v_world_normal_y);
     vec3 base_col = mix(zone_col, color_rock.rgb, rock_t);
 
-    // Попиксельный шум + тайл-текстура. В low_quality пропускаем (экономия fill).
+    // Per-pixel noise + tile texture. Skipped in low_quality (saves fill).
     if (!low_quality) {
         float noise = (hash2D(v_pixel_uv) - 0.5) * color_variation;
         base_col     = clamp(base_col + noise, 0.0, 1.0);
@@ -108,7 +108,7 @@ void fragment() {
         }
     }
 
-    // Вершины травы (v_is_grass=1) чуть ярче подстилки — простая тень под травой.
+    // Grass vertices (v_is_grass=1) slightly brighter than the ground below — a cheap shadow under the grass.
     float shadow = mix(0.65, 1.0, v_is_grass);
 
     ALBEDO    = base_col * shadow;
