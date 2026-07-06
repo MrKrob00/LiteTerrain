@@ -1,12 +1,17 @@
 shader_type spatial;
-render_mode diffuse_lambert;
+// specular_disabled: the terrain is matte (SPECULAR=0) — drop specular from the pipeline.
+render_mode diffuse_lambert, specular_disabled;
 
 group_uniforms Quality;
 // Low quality for weak (fill-bound) hardware: disables per-pixel noise and the tile texture.
 uniform bool low_quality = false;
 
 group_uniforms Texture;
-uniform sampler2D tile_texture : source_color, filter_nearest;
+// filter_nearest_mipmap is the key to FPS: without mips, distant/grazing tiles read scattered
+// texels → constant texture-cache misses (the main fill hog — confirmed by low_quality, which
+// disables this sample, giving +14 FPS). With mips, distant pixels read small levels → cache
+// hits, cheap and moiré-free; up close, nearest keeps the crisp pixel look.
+uniform sampler2D tile_texture : source_color, filter_nearest_mipmap;
 // Tile size in world units. Tiling is computed from world-space XZ (see vertex()), so it
 // adapts to any map size and looks the same in game and in the editor.
 uniform float tile_world_size  : hint_range(0.1, 100.0) = 1.0;
@@ -46,9 +51,17 @@ uniform vec2  trample_center = vec2(0.0);
 uniform float trample_size   = 130.0;
 group_uniforms;
 
-varying vec2  v_pixel_uv;
-varying float v_world_height;
-varying float v_world_normal_y;
+// FILL OPTIMIZATION: the height/slope zone color (and the transition to rock) is computed in the
+// VERTEX shader (v_base_col) and interpolated, instead of being recomputed per pixel. The terrain
+// is fill-bound (expensive per-pixel) while there are orders of magnitude fewer vertices. The look
+// is the same; zone borders become a linear transition (imperceptible up close where the mesh is
+// dense, and tiny at distance anyway). Only what must be per-pixel stays in the fragment: noise
+// and the tile texture.
+varying vec2  v_pixel_uv;    // quantized (floored to the grid) — for stable noise and grass
+varying vec2  v_tile_uv;     // smooth — for sampling the tile texture: only from this can the GPU
+                             // pick the mip level correctly (via ddx/ddy derivatives); the
+                             // quantized v_pixel_uv has stepped derivatives → broken mips.
+varying vec3  v_base_col;
 varying float v_is_grass;
 
 float hash2D(vec2 p) {
@@ -58,18 +71,25 @@ float hash2D(vec2 p) {
 }
 
 void vertex() {
-    vec4 world_pos   = MODEL_MATRIX * vec4(VERTEX, 1.0);
-    v_pixel_uv       = floor(world_pos.xz / tile_world_size * PIXELS_PER_TILE) / PIXELS_PER_TILE;
-    v_world_height   = world_pos.y;
-    v_world_normal_y = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz).y;
+    vec4 world_pos = MODEL_MATRIX * vec4(VERTEX, 1.0);
+    float wy = world_pos.y;
+    v_tile_uv  = world_pos.xz / tile_world_size;                                  // smooth (texture + mip)
+    v_pixel_uv = floor(v_tile_uv * PIXELS_PER_TILE) / PIXELS_PER_TILE;            // quantized (noise/grass)
+
+    // Height zones (sand→grass→snow) + slope→rock — the whole base color is computed here.
+    float t_grass = smoothstep(height_grass_start - zone_blend, height_grass_start + zone_blend, wy);
+    float t_snow  = smoothstep(height_snow_start  - zone_blend, height_snow_start  + zone_blend, wy);
+    vec3  zone    = mix(color_sand.rgb, color_grass.rgb, t_grass);
+    zone          = mix(zone,           color_snow.rgb,  t_snow);
+    float ny      = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz).y;
+    float rock_t  = 1.0 - smoothstep(rock_threshold - rock_blend, rock_threshold + rock_blend, ny);
+    v_base_col    = mix(zone, color_rock.rgb, rock_t);
 
     v_is_grass = 0.0;
-
     // COLOR.r < 0.5 marks vertices on a chunk border: grass displacement is skipped there so the
-    // seam (especially at LOD boundaries) stays on the stitched base surface. Meshes without vertex
-    // colours give COLOR = white. lod_grass_enabled = 1.0 only on the near (LOD-0) material,
-    // so grass is displaced only up close where it is visible.
-    if (lod_grass_enabled > 0.5 && COLOR.r > 0.5 && v_world_height >= grass_min_height && v_world_height <= grass_max_height) {
+    // seam (especially at LOD boundaries) stays on the stitched base surface. lod_grass_enabled=1
+    // only on the near LOD-0 material — grass is displaced only up close where it is visible.
+    if (lod_grass_enabled > 0.5 && COLOR.r > 0.5 && wy >= grass_min_height && wy <= grass_max_height) {
         if (hash2D(v_pixel_uv) < grass_density) {
             vec3 offset = NORMAL * grass_height;
             vec2 t_uv = (world_pos.xz - trample_center) / trample_size + vec2(0.5);
@@ -84,34 +104,17 @@ void vertex() {
 }
 
 void fragment() {
-    // Height zones: sand -> grass -> snow.
-    float t_grass = smoothstep(height_grass_start - zone_blend,
-                                height_grass_start + zone_blend, v_world_height);
-    float t_snow  = smoothstep(height_snow_start  - zone_blend,
-                                height_snow_start  + zone_blend, v_world_height);
+    vec3 base_col = v_base_col;
 
-    vec3 zone_col = mix(color_sand.rgb, color_grass.rgb, t_grass);
-    zone_col      = mix(zone_col,       color_snow.rgb,  t_snow);
-
-    // Steep slopes -> rock.
-    float rock_t  = 1.0 - smoothstep(rock_threshold - rock_blend,
-                                       rock_threshold + rock_blend, v_world_normal_y);
-    vec3 base_col = mix(zone_col, color_rock.rgb, rock_t);
-
-    // Per-pixel noise + tile texture. Skipped in low_quality (saves fill).
+    // Per-pixel only: color noise + tile texture. Skipped in low_quality (saves fill).
     if (!low_quality) {
-        float noise = (hash2D(v_pixel_uv) - 0.5) * color_variation;
-        base_col     = clamp(base_col + noise, 0.0, 1.0);
+        base_col = clamp(base_col + (hash2D(v_pixel_uv) - 0.5) * color_variation, 0.0, 1.0);
         if (texture_blend > 0.001) {
-            vec4 tile_col = texture(tile_texture, v_pixel_uv);
-            base_col = mix(base_col, tile_col.rgb, texture_blend);
+            base_col = mix(base_col, texture(tile_texture, v_tile_uv).rgb, texture_blend);
         }
     }
 
     // Grass vertices (v_is_grass=1) slightly brighter than the ground below — a cheap shadow under the grass.
-    float shadow = mix(0.65, 1.0, v_is_grass);
-
-    ALBEDO    = base_col * shadow;
+    ALBEDO    = base_col * mix(0.65, 1.0, v_is_grass);
     ROUGHNESS = 0.9;
-    SPECULAR  = 0.0;
 }
