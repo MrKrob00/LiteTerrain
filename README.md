@@ -57,7 +57,8 @@ Search for **LiteTerrain**, install, then enable it in **Project > Project Setti
 ### Manually
 1. Copy `addons/lite_terrain/` into your project's `addons/` directory.
 2. Enable **LiteTerrain** in **Project > Project Settings > Plugins**. Enabling it also declares the global
-   shader uniforms the ground shader reads (without the haze pair it would not compile).
+   shader uniforms the ground shader reads (without the haze pair it would not compile); restart the editor
+   once after enabling it for the first time so Godot picks them up.
 
 ## Quick start
 
@@ -77,7 +78,7 @@ scene that used the old node has to be rebuilt around it.
 
 ## Compatibility
 
-Godot 4.6 / 4.7. Developed and measured on the Compatibility (GLES3) renderer.
+Godot 4.6 / 4.7. Developed and measured on the Compatibility (GLES3) renderer; collision tested with both Godot Physics and Jolt.
 
 ## License
 

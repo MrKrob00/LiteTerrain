@@ -76,7 +76,10 @@ Each layer has one job and one door:
 2. **Project > Project Settings > Plugins** → enable **LiteTerrain**.
 
 Enabling the plugin declares the global shader uniforms the ground shader reads (see
-[Shader globals](#shader-globals)); without the haze pair the shader does not compile.
+[Shader globals](#shader-globals)); without the haze pair the shader does not compile. They are
+written to `project.godot` and Godot reads them at start-up, so **restart the editor once** after
+enabling the plugin for the first time (before that you may see a one-time "Global uniform
+'world_haze' does not exist" message).
 
 ## Quick start
 
@@ -203,7 +206,22 @@ are asked for along each body's CORRIDOR: where it is plus where it will be in
 `COLLISION_LOOKAHEAD` seconds. Moving bodies (`RigidBody3D`, `CharacterBody3D`) are found through the
 tree's `node_added` / `node_removed`; a body riding another is covered by its parent, a sleeping
 one and one carrying the meta `asleep` get no tiles. The terrain itself is on collision layer 1
-and scans nothing (mask 0). `StaticBody3D` and `Area3D` never ask for ground.
+and scans nothing (mask 0). `StaticBody3D` and `Area3D` never ask for ground. Tested with both
+Godot Physics and Jolt.
+
+**A body needs ground under it before it is released.** The first ring of tiles is built round the
+camera (or the saved start point) before `terrain_ready`; a tile is *computed*, not cut from a ready
+array, so one asked for later takes a moment. A body placed outside the ring, or dropped from a
+height onto ground whose tile is not up yet, can fall below the surface — a height field has no
+thickness, so it never comes back. Keep such a body frozen (or off) until
+`has_collision_at(world_pos)` is true:
+
+```gdscript
+await terrain.terrain_ready
+while not terrain.has_collision_at(body.global_position):
+    await get_tree().physics_frame
+body.freeze = false
+```
 
 ## Shader globals
 
@@ -285,8 +303,9 @@ colours, snow, rock, sand grass, canyon bands, grass density/height/shade and th
 missing: disable and enable the plugin once (it declares them), or add the globals from the table
 above under **Project Settings > Shader Globals** (at least `world_haze` and `haze_range`).
 
-**A body falls through at load.** Something asked for a height before `terrain_is_ready`; wait for
-it by the clock.
+**A body falls through the ground.** It was released before its tile existed, or it was placed
+outside the first ring: wait for `terrain_ready` and then for `has_collision_at(pos)` (see
+[Collision](#collision)). Reading a height before `terrain_is_ready` has the same cause.
 
 **A hole opens while driving.** See `_covered` above: if you touch that rule, this is what breaks.
 

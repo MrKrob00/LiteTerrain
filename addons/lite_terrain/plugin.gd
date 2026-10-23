@@ -53,16 +53,16 @@ func _exit_tree() -> void:
 func _register_shader_globals() -> void:
 	var added := false
 	var live := RenderingServer.global_shader_parameter_get_list()
-	for gname in SHADER_GLOBALS:
+	for gname: String in SHADER_GLOBALS:
 		var entry: Array = SHADER_GLOBALS[gname]
-		var key := "shader_globals/" + gname
+		var key: String = "shader_globals/" + gname
 		if not ProjectSettings.has_setting(key):
 			ProjectSettings.set_setting(key, {"type": entry[0], "value": entry[1]})
 			added = true
 		# The editor reads the section only on start-up, so a global declared just now is added to the
 		# running renderer too, or the shader would stay broken until the project is reopened.
 		if not live.has(StringName(gname)):
-			var kind := RenderingServer.GLOBAL_VAR_TYPE_COLOR if entry[0] == "color" else RenderingServer.GLOBAL_VAR_TYPE_VEC4
+			var kind: RenderingServer.GlobalShaderParameterType = RenderingServer.GLOBAL_VAR_TYPE_COLOR if entry[0] == "color" else RenderingServer.GLOBAL_VAR_TYPE_VEC4
 			RenderingServer.global_shader_parameter_add(gname, kind, entry[1])
 	if added:
 		ProjectSettings.save()
