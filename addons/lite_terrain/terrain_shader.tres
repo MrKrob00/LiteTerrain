@@ -1,0 +1,45 @@
+[gd_resource type="ShaderMaterial" format=3 uid="uid://c3kk0fssrbxti"]
+
+[ext_resource type="Shader" uid="uid://odp3d3fw6ao2" path="res://addons/lite_terrain/glsl.gdshader" id="1_w48e6"]
+
+[resource]
+render_priority = 0
+shader = ExtResource("1_w48e6")
+shader_parameter/detail_world_size = 9.0
+shader_parameter/ripple_strength = 0.55
+shader_parameter/grass_detail = 1.0
+shader_parameter/patch_strength = 0.1
+shader_parameter/stroke_dark = Color(0.62, 0.8, 0.84, 1)
+shader_parameter/stroke_light = Color(1.3, 1.2, 0.74, 1)
+shader_parameter/sand_dark = Color(0.93, 0.88, 0.84, 1)
+shader_parameter/sand_light = Color(1.07, 1.06, 1.08, 1)
+shader_parameter/salt_dark = Color(0.9, 0.9, 0.97, 1)
+shader_parameter/salt_light = Color(1.07, 1.05, 1.02, 1)
+shader_parameter/canyon_dark = Color(0.84, 0.82, 0.94, 1)
+shader_parameter/canyon_light = Color(1.12, 1.08, 0.98, 1)
+shader_parameter/rock_dark = Color(0.76, 0.82, 0.96, 1)
+shader_parameter/rock_light = Color(1.18, 1.12, 1, 1)
+shader_parameter/snow_dark = Color(0.88, 0.93, 1.03, 1)
+shader_parameter/snow_light = Color(1.03, 1.02, 0.98, 1)
+shader_parameter/rock_facets = 0.55
+shader_parameter/color_sand = Color(0.87, 0.74, 0.49, 1)
+shader_parameter/color_grass = Color(0.33, 0.56, 0.23, 1)
+shader_parameter/color_snow = Color(0.94, 0.96, 1, 1)
+shader_parameter/snow_line = 60.0
+shader_parameter/snow_blend = 25.0
+shader_parameter/color_rock = Color(0.5, 0.5, 0.54, 1)
+shader_parameter/rock_threshold = 0.7
+shader_parameter/rock_blend = 0.15
+shader_parameter/sand_grass = 0.1
+shader_parameter/color_canyon = Color(0.7, 0.3, 0.15, 1)
+shader_parameter/canyon_band_h = 6.0
+shader_parameter/color_salt = Color(0.9, 0.84, 0.74, 1)
+shader_parameter/crack_strength = 0.65
+shader_parameter/grass_density = 1.0
+shader_parameter/grass_height = 0.3
+shader_parameter/grass_shade = 0.62
+shader_parameter/grass_fade = Vector2(72, 96)
+shader_parameter/trample_center = Vector2(0, 0)
+shader_parameter/trample_size = 130.0
+shader_parameter/trample_on = false
+shader_parameter/snow_height = 0.3

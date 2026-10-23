@@ -1,386 +1,298 @@
 # LiteTerrain
 
-Lightweight heightmap terrain for Godot 4, tuned for mobile. One node builds its
-own collision body, its collision shape, and its render mesh, then keeps the map
-cheap on weak hardware with quadtree LOD and streaming collision. It ships with an
-editor dock for creating, generating, sculpting, and baking terrain.
+**Version 2.0** · Godot 4.6 / 4.7 · tuned for mobile (Compatibility renderer)
 
-It was built and tuned on an Adreno 610 (a low-end mobile GPU), so the defaults
-lean toward performance.
+Procedural terrain stored and drawn in CHUNKS. One node builds the whole world from a seed: no
+heightmap file, no world-sized array, no edge. A chunk asks the generator for its own vertices,
+LOD merges four chunks into one mesh instead of decimating anything, and collision is cut only
+under the bodies that need it.
 
-## Contents
+Biomes — desert, meadow, salt flats, canyon, mountains — live in one resource that drives the
+landform, the masks and the colours at once, so a biome's shape cannot drift away from its look.
 
-- [Requirements](#requirements)
-- [Install](#install)
-- [Quick start](#quick-start)
-- [The terrain node](#the-terrain-node)
-- [Appearance](#appearance)
-- [Runtime API](#runtime-api)
-- [Physics and collision](#physics-and-collision)
-- [Sculpting](#sculpting)
-- [Generating terrain](#generating-terrain)
-- [Baking and shipping a big map](#baking-and-shipping-a-big-map)
-- [Performance tuning](#performance-tuning)
-- [How it works](#how-it-works)
-- [Property reference](#property-reference)
-- [Shader reference](#shader-reference)
-- [Troubleshooting](#troubleshooting)
+> **2.0 is a new design, not an update of 1.x.** The 1.x line was a single node script (`map.gd`)
+> over a baked height map, with a dock for sculpting, noise generation and baking. 2.0 has no
+> height map at all: the ground IS the seed. The sculpt brush, the generate/bake buttons, the
+> `LiteTerrain` node, `use_image_data` and the `Dark/` tile textures are gone, and the node is now
+> `ChunkTerrain`. A project that used 1.x terrain data has to rebuild its scenes — there is nothing
+> to convert, because 2.0 reads no height files.
 
-## Requirements
+## Architecture
 
-- Godot 4.x.
-- Renderer: Compatibility (GLES3) is recommended. The plugin is tuned for mobile,
-  but it also runs on Forward+.
+```
+                         ┌──────────────────────────────────────────────┐
+  Add Node → ChunkTerrain│  ChunkTerrain  (chunk_terrain.gd)            │
+                         │  the node: LOD tree · build queue · thread   │
+                         │  pool · collision tiles · edits · occlusion  │
+                         └───────┬───────────────────────────┬──────────┘
+                    asks for     │                           │  writes colours, masks,
+                    heights      ▼                           ▼  settings
+          ┌──────────────────────────────┐     ┌──────────────────────────────┐
+          │ LiteTerrainGen               │     │ TerrainBiomes (a Resource)   │
+          │ (terrain_gen.gd)             │◄────│ (terrain_biomes.gd)          │
+          │ height_at(x, z): noise, blur │masks│ biome masks, their noise,    │
+          │ and the canyon cut at ONE    │     │ the colours handed on to the │
+          │ world point; sample_grid     │     │ shader                       │
+          └──────────────────────────────┘     └───────────────┬──────────────┘
+                                                               │ vertex COLOR + uniforms
+                                                               ▼
+                                          ┌──────────────────────────────────┐
+                                          │ glsl.gdshader  (terrain_shader.  │
+                                          │ tres, ground_detail.png)         │
+                                          │ biome colour · slope rock · grass│
+                                          │ lift · detail masks · haze       │
+                                          └──────────────────────────────────┘
+
+  Editor only:  plugin.gd ─► terrain_inspector.gd ─► preview_panel.gd
+                (viewport camera, shader globals)    ("Build in scene" / "Clear")
+```
+
+Each layer has one job and one door:
+
+- **The generator answers by point and nothing else.** `height_at(wx, wz)` is the ground; a chunk is a
+  grid of it. Nothing in it touches the scene or a file, so it runs on worker threads and the same
+  seed gives the same world in the editor, in the game and on a phone.
+- **The node owns time and memory**: which nodes exist this tick (distance), which of them are drawn
+  (frustum), what is computed next (queues), what is kept (caches) and which collision tiles are cut.
+- **The biomes are data**: one resource drives the landform, the masks and the colours, and bakes the
+  masks into the vertices, so the shader never recomputes them.
+- **The shader only reads**: colour, rock, snow, grass and detail from vertex data and a few uniforms.
+
+## Files
+
+| File | What it is |
+|---|---|
+| `chunk_terrain.gd` | `ChunkTerrain`, the node: LOD selection, the build queue, collision tiles, edits. |
+| `terrain_gen.gd` | `LiteTerrainGen`: the height at a world point (`height_at`) and grids of it (`sample_grid`). |
+| `terrain_biomes.gd` | `TerrainBiomes`: the biome masks, their noise and the colours handed to the shader. |
+| `glsl.gdshader` | The ground shader: biome colour, slope rock, grass lift, detail masks, haze. |
+| `terrain_shader.tres` | The ground's material (a ShaderMaterial on `glsl.gdshader`); every uniform shows in the inspector. |
+| `ground_detail.png` | Four tileable detail masks in one texture. |
+| `plugin.gd`, `terrain_inspector.gd`, `preview_panel.gd` | Editor only: the buttons at the top of the node's inspector that build the ground round the editor camera, and the shader globals. |
 
 ## Install
 
-1. Copy the `lite_terrain` folder into your project's `res://addons/`.
-2. Open Project Settings, go to the Plugins tab, and enable LiteTerrain.
-3. A dock named LiteTerrain appears on the left. Everything is driven from there.
+1. Copy `addons/lite_terrain/` into your project's `addons/` folder (or install it from the Asset Store).
+2. **Project > Project Settings > Plugins** → enable **LiteTerrain**.
+
+Enabling the plugin declares the global shader uniforms the ground shader reads (see
+[Shader globals](#shader-globals)); without the haze pair the shader does not compile.
 
 ## Quick start
 
-1. Open a 3D scene.
-2. In the LiteTerrain dock, press "Create Terrain Node". This bakes a flat 128x128
-   heightmap into the addon folder (`terrain_height.res`) and assembles a ready
-   terrain: a StaticBody3D with the `LiteTerrain` script, a CollisionShape3D, and a
-   MeshInstance3D, with the terrain shader already applied. It comes up in image
-   mode with streaming collision on, so it renders and runs well on both small and
-   large maps out of the box.
-3. Select the node, then shape the terrain in one of two ways:
-   - Press "Generate Terrain" to build noise-based terrain. Set the seed, scale,
-     octaves, amplitude, map size, and the other parameters first.
-   - Or sculpt by hand with the Raise, Lower, and Flatten buttons. Paint with the
-     left mouse button in the viewport. Radius and strength are in the dock. Each
-     brush stroke is one undo step (Ctrl+Z to undo, Ctrl+Y to redo).
-4. Press "Bake to files" to write the runtime data: the heightmap
-   (`terrain_height.res`) and a preview mesh (`terrain_mesh.res`). This makes the
-   map load fast at runtime.
-5. Optionally press "Generate PNG" to export the heightmap as a grayscale image
-   (`terrain_heightmap.png`), useful for a minimap or for editing in another tool.
+1. Add a **ChunkTerrain** node to a 3D scene (by name — the script has a `class_name`).
+2. Set `forced_seed` in the inspector (any integer; the same seed is the same world).
+3. Give it a `TerrainBiomes` resource in `biomes`, or leave it empty and it makes one.
+4. Press **Build in scene** at the top of its inspector to build the real ground round the editor
+   camera; after changing the material's settings press it again to see them.
+5. Make sure the scene has a current `Camera3D` and a `DirectionalLight3D` (the ground is lit like any
+   other lit surface), then run it: the ground is built round the camera the scene is drawn with, and
+   collision tiles follow every `RigidBody3D` / `CharacterBody3D`.
 
-The dock remembers its brush and generation settings per project, so you do not
-have to set them again every session.
+There is nothing to generate into a file and nothing to bake: the ground IS the seed.
 
-## The terrain node
+## The node
 
-The node class is `LiteTerrain` (`map.gd`). It extends StaticBody3D and uses two
-children, a `CollisionShape3D` and a `MeshInstance3D`. You do not have to add them:
-the node creates them itself if they are missing, so you can drop in a single
-LiteTerrain node. The "Create Terrain Node" button also sets everything up for you.
+`ChunkTerrain` extends StaticBody3D and makes everything it needs itself (chunk meshes, collision
+shapes as internal children), so the scene stays a single node.
 
-The node holds map and streaming settings. The appearance (tile texture, blend,
-tile size, zone colors, grass, low quality) lives on the material, not on the node.
-See [Appearance](#appearance).
+In the inspector:
 
-The node properties you will touch most often:
+| Property | What it does |
+|---|---|
+| `surface_material` | The ground's material: `terrain_shader.tres` by default, every uniform in the inspector. The node draws with a copy, into which `biomes` writes its part (see the shader reference). |
+| `biomes` | The `TerrainBiomes` resource. |
+| `enable_occlusion_culling` | What stands behind a hill is not drawn (`is_point_hidden`, for veins, props and machines you place on the ground). |
+| `forced_seed` | The world's seed. The editor preview builds with it. |
+| Render: `view_distance`, `haze_enabled` | How far ground is drawn (200 m – 10 km); whether the distance haze is on. |
+| Biomes: `desert_enabled`, `canyons_enabled`, `mountains_enabled`, `salt_flats_enabled` | Switch a biome off for the whole map; landform, colour and masks all agree. |
+| Vertex lift: `grass_lift_enabled`, `snow_lift_enabled` | The grass blades and the snow crust, lifted in the vertex stage. |
 
-| Property | Default | What it does |
-|---|---|---|
-| `camera` | empty | Optional. Leave empty and the terrain uses the current active camera automatically, and follows camera switches. Set it only to force LOD from a specific camera. |
-| `surface_material` | addon `terrain_shader.res` | The material used for the terrain. All appearance settings live on it. |
-| `use_image_data` | `true` | On: the heightmap lives in an R32F image (`heightmap_path`) and collision streams under moving bodies. Recommended for large maps. Off: a single HeightMapShape3D holds the whole map. |
-| `heightmap_path` | addon `terrain_height.res` | The R32F resource the runtime loads when `use_image_data` is on. Hidden in the inspector when it is off. |
-| `max_render_distance` | `1400.0` | How far terrain is drawn. Keep it close to your fog distance. |
+Fields a script can set (a menu backdrop or a second map would):
 
-The full list is in the [Property reference](#property-reference).
+| Field | What it does |
+|---|---|
+| `follow_world_settings` | On: if an autoload called `G` exists and has `world_seed`, that is the seed (one world per save slot). Otherwise — and in any project without such an autoload — `forced_seed`. |
+| `keep_radius` | Inside what radius nothing built is ever dropped. |
+| `ready_ring`, `ready_view` | What must be up before `terrain_ready`: chunks with collision round the start, then the view out to this many metres. |
+| `enable_streaming_collision` | Collision tiles round moving bodies. |
 
-## Appearance
+Constants, not settings: `FRUSTUM_MARGIN`, `BUILD_BATCH`, `STITCH_BUDGET`, `LOD_INTERVAL`,
+`APPLY_BUDGET`, `COLLISION_RADIUS`, `COLLISION_LOOKAHEAD`, `WORLD_CELLS` (a NOMINAL square for
+`get_dims`, not an edge), `OCCL_MIN_DIST`, `OCCL_BIAS`. The camera is always the one the scene is
+drawn with, the material always `glsl.gdshader`, frustum culling always on.
 
-The look is driven entirely by the material (`surface_material`, the bundled
-`terrain_shader.res` by default). Select the material and edit its Shader Parameters
-in the inspector. These are not duplicated onto the node, so there is one place to
-change them. The defaults live in the shader (`glsl.gdshader`) and the bundled
-material, so a fresh terrain already looks right.
+## Biomes
 
-Common ones:
+A biome is a 0..1 **mask** of world-XZ value noise (`TerrainBiomes.cv_noise`, handed to the masks
+as `biomes.noise`). Layers stack in this order:
 
-| Shader parameter | Default | What it does |
-|---|---|---|
-| `tile_texture` | `Dark/6.png` | Surface tile texture. Pick any texture you like. |
-| `texture_blend` | `0.1` | How much the tile texture shows over the height colors. `0` is colors only, `1` is texture only. |
-| `tile_world_size` | `31.0` | World units per texture tile. The shader tiles by world position, so the look is automatic at any map size, in game and in editor. |
-| `low_quality` | `false` | Simplifies the per-pixel shader for weak GPUs. See Performance tuning. |
-| `color_sand` / `color_grass` / `color_snow` / `color_rock` | terrain tones | Zone and slope colors. |
-| `grass_density` / `grass_height` | `0.4` / `0.15` | Grass amount and height. |
+```
+base DESERT ↔ MEADOW  →  SALT FLATS on the desert  →  CANYON  →  MOUNTAINS
+```
 
-The full uniform list is in the [Shader reference](#shader-reference).
+| Group | Settings |
+|---|---|
+| Desert / Meadow | `biome_scale`, `biome_bias`, `biome_blend`, `biome_contrast`, `color_sand`, `color_grass`, `dune_wavelength`, `desert_flatten` |
+| Salt flats | `salt_scale`, `salt_threshold`, `salt_edge`, `color_salt` |
+| Canyon | `canyon_scale`, `canyon_threshold`, `canyon_edge`, `color_canyon`, `canyon_band_height`, `canyon_butte_scale` |
+| Mountains | `mountain_scale`, `mountain_threshold`, `mountain_edge` |
+| Snow / rock | `color_snow`, `snow_frac`, `snow_blend_frac`, `color_rock`, `rock_threshold`, `rock_blend` |
+| Grass | `grass_density`, `grass_height`, `sand_grass`, `grass_shade` |
+
+- Every layer is on unless its switch on the node says otherwise. `mask_offset` is not a setting: it
+  is worked out from the seed (`offset_for_seed`) wherever a world is built.
+- Heights in metres follow the world's Height, not knobs: dunes, a mountain's rise, the gorge depth
+  (`terrain_gen.prepare_sampling`) and the snow line (`snow_frac` × Height).
+- Rock follows SLOPE, snow follows the mountain mask AND height, grass grows on the meadow and,
+  sparser, on sand (`sand_grass`).
+- `canyon_band_height` sizes both the colour strata and the geometry terraces.
+- The size of a biome patch is set by its `*_scale` and nothing else (a mask is one octave and a
+  threshold, so it has no size floor; lowering a threshold removes slivers but changes how much of
+  the map the biome covers).
+- A new biome is a shader edit too: each layer's colour is a `mix()` in `glsl.gdshader`'s `vertex()`.
+
+The masks are baked into the vertex COLOR per vertex (`ChunkTerrain._biome_colour`): `.g` canyon,
+`.b` meadow, `.a` mountain, and `.r` carries two things — the vertex's border code (0 inside its
+node, 1 on a border along x, 2 along z) and the salt flat: `EDGE_STEP` × code + `SALT_SPAN` × salt.
+
+The grass is the same function of the world point on every level (`blade_at` in the shader): each
+vertex lifted straight up, a border vertex at an odd metre taking the mean of its two neighbours
+along the border, so a seam between any two levels lifts alike whenever each side was built. It
+fades out before level 2 begins (`ChunkTerrain.grass_fade`).
 
 ## Runtime API
 
 ```gdscript
-terrain.terrain_height_at(world_pos: Vector3) -> float   # ground height under a world point
-terrain.get_dims() -> Vector2i                           # heightmap width and depth in cells
+terrain.terrain_height_at(world_pos: Vector3) -> float  # ground height under a world point
+terrain.ground_sample(world_pos: Vector3) -> Vector3    # (height, dh/dx, dh/dz): the same patch, with its slope
+terrain.biome_at(world_pos: Vector3) -> Vector3         # (canyon, meadow, mountain) masks
+terrain.salt_at(world_pos: Vector3) -> float
+terrain.world_height() -> float                         # the Height the world was built with
+terrain.terrain_is_ready                                # the near ground is up (a bool and a signal, terrain_ready)
+terrain.set_collision_streaming(on: bool)
+terrain.is_point_hidden(world_pos: Vector3, height := 1.0, was_hidden := false) -> bool  # behind a hill?
+terrain.set_grass_trample(tex: Texture2D, center: Vector2, size: float)  # a texture that presses the grass flat
+terrain.stop_generation()                               # wait out the running tasks; call before freeing
 ```
 
-Use `terrain_height_at` to place objects on the ground instead of dropping them
-from the air:
+A height is read from a BUILT level-0 chunk when one holds that cell, and asked of the generator
+only otherwise (`_memo_h`). WAIT FOR THE GROUND BY THE CLOCK, NOT BY FRAMES: readiness is worker
+threads computing heights, which is real seconds. Use `terrain_height_at` only after
+`terrain_ready`; before it the answer is not the ground.
+
+### Editing the ground at runtime
 
 ```gdscript
-body.global_position.y = terrain.terrain_height_at(body.global_position) + clearance
+terrain.flatten_area(center: Vector3, half_extent: Vector2, height: float, feather := 4.0, record := true)
+terrain.ground_edits() -> Array          # plain dictionaries, JSON-ready
+terrain.apply_ground_edits(list: Array)  # replay them on load
+terrain.reset_heights()                  # forget every edit
 ```
 
-The node also exposes a sculpt and data API used by the dock (`is_image_mode`,
-`get_heights`, `set_heightmap`, `apply_brush`, `raycast_heightmap`, `apply_heightmap`).
-You rarely need these directly, but they are there if you build your own tooling.
+A pad is a RECTANGLE (buildings are oblong). Edits are a LIST applied on top of the generator in
+one function, so the mesh, the collision and a height query see the same ground; replay them before
+restoring anything that stands on them. Every edit carries a running number, so a save replayed
+twice cannot deepen a pad. The edit list is the only thing worth saving: the ground itself is the seed.
 
-## Physics and collision
+## Collision
 
-The terrain gives itself collision, so you do not add a CollisionShape3D by hand.
+A collision tile IS a base chunk, cut from the same heights as the level-0 mesh. Tiles have their
+OWN queue and it goes first (a tile is what a body drives on, a mesh what it looks at), and they
+are asked for along each body's CORRIDOR: where it is plus where it will be in
+`COLLISION_LOOKAHEAD` seconds. Moving bodies (`RigidBody3D`, `CharacterBody3D`) are found through the
+tree's `node_added` / `node_removed`; a body riding another is covered by its parent, a sleeping
+one and one carrying the meta `asleep` get no tiles. The terrain itself is on collision layer 1
+and scans nothing (mask 0). `StaticBody3D` and `Area3D` never ask for ground.
 
-Out of the box, the defaults are image mode with streaming collision. Streaming means
-the terrain does not carry one giant collision shape. Instead it creates a small
-collision window that follows each moving body, which is what keeps a large map cheap.
+## Shader globals
 
-It tracks bodies automatically, with no setup. Every moving physics body in the scene
-(RigidBody3D, VehicleBody3D, CharacterBody3D) gets a collision window sized by
-`collision_radius`. You drop the terrain in, add your player, and the ground is there.
+The ground shader reads global uniforms, which a project declares in its `[shader_globals]` section.
+The plugin adds the ones that are missing when it loads, with the values the ground was tuned with,
+and leaves a project's own values alone:
 
-Things to know:
+| Global | Type | Default | Read | What it is |
+|---|---|---|---|---|
+| `world_haze` | color | (0.86, 0.80, 0.70) | always | The distance haze's colour — also what the sky's horizon should be. |
+| `haze_range` | vec4 | (150, 750, 0.85, 0) | always | x, y: where the haze begins and ends (m); z: its strength. The node rewrites z from `haze_enabled`. |
+| `sun_dir` | vec4 | (0.836, 0.402, 0.374, 0) | `fast_ground` | Direction toward the sun. |
+| `ground_amb` | vec4 | (0.24, 0.22, 0.19, 0) | `fast_ground` | Ambient tint of the ground's own lighting. |
+| `ground_sun` | vec4 | (1.0, 0.93, 0.80, 0) | `fast_ground` | Sun tint of the ground's own lighting; `.a` wraps the diffuse term. |
 
-- Only terrain inside an active window has collision. A body far from any tracked body
-  sits on no ground. Increase `collision_radius` if a fast body outruns its window.
-- A body that rides on another body (for example a part welded to a vehicle) is
-  skipped, since the parent body's window already covers it.
-- Bullets, triggers (Area3D), and static bodies are never tracked. Only moving bodies
-  get windows.
-- The plugin uses `HeightMapShape3D`, which works with both the default Godot physics
-  and the Jolt physics engine. It was tuned on Jolt. The `collision_overlap` setting
-  overlaps neighbouring collision tiles so a wheel does not catch on the seam between
-  them. If you see a small bump when crossing tile boundaries on the default physics
-  engine, adjust `collision_overlap`.
+Change them at run time with `RenderingServer.global_shader_parameter_set()` — for example from a
+day/night cycle. They stay in the project when the plugin is disabled: a shader that is still
+compiled cannot lose them.
 
-## Sculpting
+### `fast_ground`: a cheaper ground for phones
 
-Select the terrain node, pick a mode in the dock, and paint in the viewport with
-the left mouse button.
+By default the ground is lit by the scene's `DirectionalLight3D` and environment like any surface.
+Setting `terrain.fast_ground = true` swaps it for an unshaded variant of the same shader that lights
+itself per vertex from `sun_dir`, `ground_amb` and `ground_sun`, and reads up to three sun-shadow maps
+you hand over with `set_sun_shadows(maps, uvs, strength)`. It skips the engine's whole light loop for
+the ground, which is most of the screen on a fill-bound GPU — the price is that you keep those three
+globals current yourself. The game this was built for does it with a day/night cycle and its own
+shadow cascades.
 
-- Raise and Lower move the surface up or down under the brush.
-- Flatten pulls the surface toward the average height inside the brush. At full
-  strength one pass flattens completely, and it never overshoots.
-- Radius and Strength are set with the dock sliders. Radius can also be changed by
-  scrolling the mouse wheel over the viewport while the terrain is selected. The
-  wheel and the slider share the same range.
-- Each brush stroke, from mouse down to mouse up, is a single Undo or Redo step
-  (Ctrl+Z and Ctrl+Y).
+## How it works (short)
 
-In image mode the mesh preview and the heightmap file update when you release the
-mouse, so undo and redo stay in sync with the file on disk.
-
-## Generating terrain
-
-Press "Generate Terrain" to fill the map with layered noise. The parameters:
-
-| Parameter | Default | Meaning |
-|---|---|---|
-| Seed | 42 | Noise seed. Same seed gives the same terrain. |
-| Scale | 150 | Size of the land masses. Larger means broader features. |
-| Octaves | 6 | Detail layers in the base noise. |
-| Plains Power | 4.0 | Flattens low ground and keeps peaks high. Higher means flatter plains and sharper peaks. |
-| Mountains | 80 percent | How strongly ridges are added on high ground. |
-| Ridge Sharpness | 2.5 | How knife-edged the mountain ridges are. |
-| Amplitude | 30 | Maximum height in world units. |
-| Smooth Passes | 1 | Box-blur passes after generation, to soften spikes. |
-| Map Size | 0 | Target size in image mode. `0` keeps the current size. This is how the map grows. |
-
-Generation replaces the whole heightmap and writes it to the R32F file, so the
-runtime and a reopened editor both load the new terrain.
-
-## Baking and shipping a big map
-
-For large maps, use image mode:
-
-1. Turn on `use_image_data` (it is on by default).
-2. Press "Bake to files" to write `terrain_height.res` (the heightmap) and
-   `terrain_mesh.res` (the preview mesh).
-3. Press "Detach big resources from scene". This replaces the large in-scene shape
-   and mesh with tiny placeholders.
-4. Save the scene.
-
-After this the runtime loads the baked `.res` and streams a small collision window
-under tracked bodies, so the scene file stays small and nothing heavy loads at
-startup.
-
-## Performance tuning
-
-Built in already: quadtree LOD (coarser meshes with distance), a resident macro
-grid plus streamed chunks so memory stays bounded, streaming collision (a small
-shape window under tracked bodies instead of one giant shape), and frustum and
-range culling.
-
-Extra levers when the GPU is fill-bound, which is the common case on mobile with a
-full-screen terrain shader:
-
-1. `low_quality` (material shader parameter). Simplifies the per-pixel terrain shader
-   by dropping the noise variation and the tile-texture fetch. Off by default so the
-   look does not change. Turn it on for weak devices. All pixels take the same
-   branch, so it is cheap on mobile GPUs.
-2. `scaling_3d/scale` (Project Settings, Rendering). The single biggest lever when
-   fill-bound. `0.75` is a good mobile default, `0.6` to `0.65` for weaker GPUs.
-   Compare `0.5` against `1.0` to see how fill-bound you actually are.
-3. `max_render_distance` (node property). How far chunks stream and draw. Keep it
-   near your fog distance so you do not draw terrain that fog hides.
-4. Directional shadows are expensive on mobile. Lower the shadow atlas size and max
-   distance, or disable shadows, and compare FPS.
-5. `grass_density` and `grass_height` (shader). Grass is a vertex cost. Lower them,
-   or set density to `0`, on the weakest hardware.
-
-## How it works
-
-This section is for people who want to modify the plugin.
-
-### Data model: image mode versus shape mode
-
-The heightmap is a flat array of float heights (`md`), width `w` by depth `d`.
-
-- Image mode (`use_image_data` on) is the default. The heights come from an R32F
-  image saved as a `.res` (`heightmap_path`), and that image is the single source
-  of truth for both the render mesh and the collision. In the editor, sculpting
-  edits the array directly and hit-testing is done by ray-marching the heightmap,
-  so no physics shape is needed while you work.
-- Shape mode (`use_image_data` off) is the legacy path. One HeightMapShape3D holds
-  both the data and the collision for the whole map. Simple, but it does not scale
-  to very large maps.
-
-### Chunks and quadtree LOD
-
-The map is split into square chunks of `chunk_size` cells. Each chunk is prebuilt at
-several LOD levels, where the vertex step doubles per level (`LOD_STEPS` is
-`[1, 2, 4]`). Closer chunks use a finer step and more triangles, farther chunks use
-a coarser step. The thresholds are `lod_distance_0`, `lod_distance_1`, and
-`lod_distance_2`.
-
-Neighbouring chunks at different LOD levels would crack at the seam, so each chunk
-carries a stitch signature that encodes its own step and the step on each of its
-four borders. A chunk is rebuilt whenever its required signature changes, which
-makes seam stitching self-healing no matter the order of LOD changes.
-
-### Macro chunks
-
-Groups of `MACRO_SIZE` by `MACRO_SIZE` chunks (4 by 4, so 16 chunks) are merged into
-one MeshInstance3D with shadows off for distant terrain. This turns 16 draw calls
-into 1 and saves the matching shadow passes.
-
-### Streaming collision
-
-With `enable_streaming_collision` on, collision is a grid of tiled HeightMapShape3D
-cells rather than one huge shape. Each tracked body marks the cells within
-`collision_radius` as needed, and bodies that share a cell share its shape. The tile
-size is `collision_cell`.
-
-Every moving body is tracked (RigidBody3D, VehicleBody3D, CharacterBody3D), with no
-node paths to configure. A body that rides on another tracked body is skipped, since
-the top body's window already covers it. Discovery uses an initial scan plus the
-tree's `node_added` and `node_removed` signals, so there is no per-frame polling. The
-window set is recomputed every frame as bodies move.
-
-Tiles are grown by `collision_overlap` cells on each side so neighbouring tiles
-overlap. This buries each tile's boundary edge under the neighbour's matching
-surface, so a wheel does not snag on the seam when crossing between tiles.
-
-Note the trade-off: only terrain inside a window has collision. Bodies far from any
-tracked body sit on no ground. Size the windows to cover your play area, or keep
-streaming collision off until the map is genuinely large.
-
-### The shader
-
-`glsl.gdshader` colors the terrain by height zones (sand, grass, snow) and by slope
-(rock), adds optional per-pixel noise and a tile texture, and displaces grass in the
-vertex stage. Its uniforms are grouped in the inspector under Quality, Texture,
-Colors, Terrain, Grass, and Trample. The `low_quality` toggle skips the noise and
-tile fetch for a direct fill saving. The optional `trample_map` presses grass down
-under objects and defaults to black, meaning no effect, so you can ignore it.
-
-### Editor state
-
-Sculpt and generation settings from the dock are stored in the editor's per-project
-metadata (inside `.godot/`, not committed to your repository), so each machine keeps
-its own values across sessions.
-
-## Property reference
-
-Culling and drawing:
-
-| Property | Default | What it does |
-|---|---|---|
-| `enable_frustum_culling` | `true` | Skip drawing chunks outside the camera frustum. |
-| `frustum_margin` | `-0.05` | Frustum test margin. Negative culls a little more aggressively. |
-| `max_render_distance` | `1400.0` | Draw distance for chunks. Keep near fog distance. |
-| `enable_occlusion_culling` | `false` | Hide chunks below the terrain horizon. Off by default because the horizon method can false-cull on a steep top-down camera. |
-| `occlusion_min_dist` | `40.0` | Chunks closer than this are never occlusion-culled. |
-| `occlusion_bias` | `1.5` | Added to a chunk top before the horizon test. Higher is more conservative. |
-| `occlusion_samples` | `8` | Heightmap samples per camera-to-chunk ray. |
-
-LOD and chunks:
-
-| Property | Default | What it does |
-|---|---|---|
-| `enable_lod` | `true` | Turn LOD on or off without changing the distances. |
-| `lod_distance_0` | `40.0` | Below this distance a chunk uses full resolution. |
-| `lod_distance_1` | `80.0` | Below this distance a chunk uses one quarter of the triangles. |
-| `lod_distance_2` | `160.0` | Below this distance a chunk uses one sixteenth of the triangles. |
-| `chunk_size` | `16` | Cells per chunk side. |
-| `editor_lod` | `false` | Off bakes one full-resolution merged mesh in the editor. On builds the whole map with LOD and rebuilds only after the editor camera stops moving. |
-
-Streaming and collision:
-
-| Property | Default | What it does |
-|---|---|---|
-| `use_image_data` | `true` | Image mode master switch. See How it works. |
-| `heightmap_path` | addon `terrain_height.res` | The R32F resource loaded in image mode. |
-| `enable_streaming_collision` | `true` | Stream a small collision window under tracked bodies. |
-| `stream_batch_size` | `8` | Chunks meshed per streaming batch. Lower means fewer frame hitches. |
-| `collision_cell` | `16` | Heightmap cells per collision tile. |
-| `collision_radius` | `8` | Cells covered around each tracked body. |
-| `collision_overlap` | `8` | Cells each tile is grown on every side so tiles overlap. |
-
-Appearance lives on the material, not the node. `surface_material` (default
-`terrain_shader.res`) is the only node property here; edit the rest as shader
-parameters on that material. See [Shader reference](#shader-reference).
+- **No data model.** `LiteTerrainGen.height_at(wx, wz)` is noise, a five-tap blur and the canyon
+  cut at one world point; that is the only ground there is. At step 1 the blur's taps are the
+  neighbouring vertices, so a chunk costs (n+2)² raw heights instead of 5n² (`_sample_unit`).
+- **LOD is chunk merging.** A node of level L covers 2^L × 2^L chunks of 16 cells and is drawn
+  with the same 16×16 quads at step 2^L. Neighbours differ by one level at most, and the finer one
+  snaps its edge onto the coarser's line — no skirts anywhere.
+- **Sub-pixel ground is not split.** A node the distance rule would split stays whole when its
+  children's cells would cover under two pixels on screen — the far plain seen at a grazing angle.
+- **Two questions, two rates.** The leaf set comes from distance alone and is cached
+  (`_build_leaves`, rebuilt after 16 m of camera travel); the frustum is a flat pass over it.
+- **Compute in a batch, land on a budget.** The pool computes `BUILD_BATCH` chunks at once; the
+  main thread lands at most `APPLY_BUDGET` meshes a frame (none of that while loading).
+- **A node is hidden only when other ground covers it** (`_covered`): a LOD change is a
+  replacement still in the queue, and hiding the old node at once opened a hole.
+- **A level change goes up as one unit**: a built mesh that does not meet what is drawn round it is
+  held until all of its change is built, so no T-junction crack shows while driving.
+- **One material, no instance uniforms**: the grass is the same function of the world point on
+  every level. An instance uniform on a chunk takes 16 slots of the global shader buffer each, and
+  there are hundreds of chunks.
+- **Behind a hill reads the drawn ground** (`is_point_hidden`): the heights the drawn node's mesh
+  was built from, never the generator — cheaper, and what the screen shows.
 
 ## Shader reference
 
-Parameters in `glsl.gdshader`, by inspector group. Edit them on the material.
+`glsl.gdshader`, worn by the node's `surface_material` (`terrain_shader.tres`), where every uniform
+shows in the inspector. The node draws with a copy of that material, into which the biomes write the
+colours, snow, rock, sand grass, canyon bands, grass density/height/shade and the detail texture
+(`TerrainBiomes.apply_to_material`): tune those in the biomes, everything else on the material.
 
-- Quality: `low_quality`.
-- Texture: `tile_texture`, `tile_world_size`, `texture_blend`.
-- Colors: `color_sand`, `color_grass`, `color_snow`, `color_rock`.
-- Terrain: `height_grass_start`, `height_snow_start`, `zone_blend`,
-  `rock_threshold`, `rock_blend`, `color_variation`.
-- Grass: `grass_density`, `grass_height`, `grass_min_height`, `grass_max_height`,
-  `bend_radius`, `lod_grass_enabled`.
-- Trample: `trample_map`, `trample_center`, `trample_size`.
-
-All of these live on the material, not the node, so there is a single place to edit
-them. Tiling is computed from world position inside the shader (`tile_world_size`),
-so there is no manual tile scale to keep in sync. The internal parameters
-`lod_grass_enabled` and the trample fields are driven by the plugin at runtime; you
-do not set them by hand. `pixels_per_tile` used to be a parameter but is now a fixed
-constant in the shader (it only quantizes the noise and grass grid), so it no longer
-clutters the inspector.
+- **Texture**: `ground_detail`, `detail_world_size`, `ripple_strength`, `grass_detail`,
+  `patch_strength`, and the per-biome stroke tints `*_dark` / `*_light`, `rock_facets`.
+- **Colours / terrain / biomes**: `color_*`, `snow_line`, `snow_blend`, `rock_threshold`,
+  `rock_blend`, `sand_grass`, `canyon_band_h`, `crack_strength`.
+- **Grass**: `grass_density`, `grass_height`, `grass_shade`, `grass_fade` (set by the node),
+  `snow_height`.
+- **Trample**: `trample_map`, `trample_center`, `trample_size`, `trample_on` (set through
+  `set_grass_trample`).
+- **Sun shadows**: `sun_shadow_map*`, `sun_shadow_uv*`, `sun_shadow_strength` (set through
+  `set_sun_shadows`; optional — the ground draws without them).
+- **Globals**: see [Shader globals](#shader-globals).
 
 ## Troubleshooting
 
-Generating a small map used to raise an error. This is fixed. The generator now
-clamps the map to at least 32 by 32, and degenerate chunks are skipped.
+**Nothing appears.** The node builds round the camera the scene is DRAWN with — check one is
+`current`.
 
-The map looks flat or wrong after opening the project. Make sure the terrain was
-baked. In image mode the runtime loads `heightmap_path`. If that file is missing,
-the node falls back to the embedded shape and warns in the output. Press
-"Bake to files".
+**The ground is pink or invisible.** The shader could not compile because a global uniform is
+missing: disable and enable the plugin once (it declares them), or add the globals from the table
+above under **Project Settings > Shader Globals** (at least `world_haze` and `haze_range`).
 
-The player falls through the terrain. With streaming collision on, ground exists only
-inside a window under a tracked body. Only moving bodies are tracked (RigidBody3D,
-VehicleBody3D, CharacterBody3D), not Area3D or StaticBody3D, so make sure your player
-is one of those. A body far from any tracked body also has no ground under it.
+**A body falls through at load.** Something asked for a height before `terrain_is_ready`; wait for
+it by the clock.
 
-A body falls through the ground far from any tracked body. Only terrain inside a
-window has collision. Increase `collision_radius` so the window keeps up.
+**A hole opens while driving.** See `_covered` above: if you touch that rule, this is what breaks.
 
-The tile texture does not show. On the material, raise `texture_blend` above `0`, and
-make sure `low_quality` is off, since low quality skips the tile fetch.
+**The editor preview is somewhere else.** It builds round the editor viewport's camera, which the
+plugin hands over when the mouse moves over the 3D view.
 
-## Notes
+## License
 
-- The plugin is designed for the Compatibility (GLES3) backend for mobile.
-- The bundled `Dark` folder holds sixteen tile textures. The default is `Dark/6.png`.
+MIT — see `LICENSE`.
